@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { supabase } from './supabaseClient'
 import { ProjectVisualView } from './ProjectVisualViews'
+import AuthGate from './AuthGate'
 
 function findProject(item, map) {
   let current = item
@@ -295,7 +296,7 @@ function personSearchTargets(person, query) {
   return targets
 }
 
-export default function App() {
+function AppContent() {
   const [areas, setAreas] = useState([])
   const [functions, setFunctions] = useState([])
   const [areaPeople, setAreaPeople] = useState([])
@@ -1592,5 +1593,13 @@ export default function App() {
         </div>
       </div>
     </>
+  )
+}
+
+export default function App() {
+  return (
+    <AuthGate>
+      <AppContent />
+    </AuthGate>
   )
 }

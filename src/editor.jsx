@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
 import { supabase } from './supabaseClient'
 import { ProjectVisualView } from './ProjectVisualViews'
+import AuthGate from './AuthGate'
 import * as XLSX from 'xlsx'
 
 const boxStyle = {
@@ -3373,4 +3374,8 @@ function EditorApp() {
   )
 }
 
-createRoot(document.getElementById('root')).render(<EditorApp />)
+createRoot(document.getElementById('root')).render(
+  <AuthGate requiredRoles={['admin']}>
+    <EditorApp />
+  </AuthGate>
+)
