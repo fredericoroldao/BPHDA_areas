@@ -1598,8 +1598,36 @@ function AppContent() {
 
 export default function App() {
   return (
-    <AuthGate>
-      <AppContent />
+    <AuthGate exposeProfile>
+      {({ profile }) => (
+        <>
+          {['admin', 'superadmin'].includes(profile.role) ? (
+            <a
+              href="/editor.html"
+              style={{
+                position: 'fixed',
+                right: 12,
+                top: 52,
+                zIndex: 51,
+                minHeight: 30,
+                borderRadius: 999,
+                border: '1px solid #6e9575',
+                background: '#fff',
+                color: '#16361f',
+                fontWeight: 700,
+                fontSize: 12,
+                padding: '5px 10px',
+                textDecoration: 'none',
+                display: 'inline-flex',
+                alignItems: 'center',
+              }}
+            >
+              Editor
+            </a>
+          ) : null}
+          <AppContent />
+        </>
+      )}
     </AuthGate>
   )
 }

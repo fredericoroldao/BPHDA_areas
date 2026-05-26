@@ -167,6 +167,7 @@ const dependencyTypeOptions = [
 ]
 
 const appUserRoleOptions = [
+  ['superadmin', 'Superadmin'],
   ['admin', 'Admin'],
   ['viewer', 'Viewer'],
 ]
@@ -322,7 +323,7 @@ function findProject(workItem, workItemMap) {
   return null
 }
 
-function EditorApp() {
+function EditorApp({ currentProfile }) {
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [tab, setTab] = useState('areas')
@@ -441,7 +442,8 @@ function EditorApp() {
     setAreaPeople(results[5].data ?? [])
     setFunctionPeople(results[6].data ?? [])
     setWorkItemPeople(results[7].data ?? [])
-    setAppUsers(results[8].data ?? [])
+    const loadedAppUsers = results[8].data ?? []
+    setAppUsers(currentProfile?.role === 'superadmin' ? loadedAppUsers : loadedAppUsers.filter((user) => user.role !== 'superadmin'))
     if (!silent) setLoading(false)
   }
 
@@ -754,7 +756,18 @@ function EditorApp() {
     await loadAll({ silent: true })
   }
 
+  function canManageAppUser(user) {
+    if (currentProfile?.role === 'superadmin') return true
+    return user.role !== 'superadmin'
+  }
+
   async function updateAppUser(id, patch) {
+    const target = appUsers.find((user) => user.id === id)
+    if (!target || !canManageAppUser(target)) {
+      setError('Não tens permissão para alterar este utilizador.')
+      return
+    }
+
     setError('')
     setMessage('')
     const { error: updateError } = await supabase.from('app_users').update(patch).eq('id', id)
@@ -764,6 +777,25 @@ function EditorApp() {
     }
     setAppUsers((prev) => prev.map((user) => user.id === id ? { ...user, ...patch } : user))
     setMessage('Utilizador atualizado.')
+  }
+
+  async function deleteAppUser(user) {
+    if (!canManageAppUser(user)) {
+      setError('Não tens permissão para apagar este utilizador.')
+      return
+    }
+
+    if (!window.confirm(`Apagar o acesso de ${user.email}?`)) return
+
+    setError('')
+    setMessage('')
+    const { error: deleteError } = await supabase.from('app_users').delete().eq('id', user.id)
+    if (deleteError) {
+      setError(deleteError.message)
+      return
+    }
+    setAppUsers((prev) => prev.filter((row) => row.id !== user.id))
+    setMessage(`Utilizador ${user.email} apagado.`)
   }
 
   const filteredProjects = useMemo(() => {
@@ -3291,7 +3323,9 @@ function EditorApp() {
             <label>
               Perfil
               <select style={inputStyle} value={inviteForm.role} onChange={(e) => setInviteForm((s) => ({ ...s, role: e.target.value }))}>
-                {appUserRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                {appUserRoleOptions
+                  .filter(([value]) => currentProfile?.role === 'superadmin' || value !== 'superadmin')
+                  .map(([value, label]) => <option key={value} value={value}>{label}</option>)}
               </select>
             </label>
             <button style={primaryButtonStyle} onClick={inviteAppUser} disabled={inviting}>
@@ -3305,23 +3339,33 @@ function EditorApp() {
           {appUsers.length ? (
             <div style={{ display: 'grid', gap: 8 }}>
               {appUsers.map((user) => (
-                <div key={user.id} style={{ ...subtleBoxStyle, display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 150px 150px auto', gap: 8, alignItems: 'center' }}>
+                <div key={user.id} style={{ ...subtleBoxStyle, display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 150px 150px auto auto', gap: 8, alignItems: 'center' }}>
                   <div>
                     <strong>{user.email}</strong>
                     {user.name ? <div style={{ fontSize: 12, color: '#5f6f66', marginTop: 3 }}>{user.name}</div> : null}
                     <div style={{ fontSize: 11, color: '#5f6f66', marginTop: 3 }}>{user.user_id ? 'Ligado a Auth' : 'Ainda sem primeiro login'}</div>
                   </div>
-                  <select style={inputStyle} value={user.role} onChange={(e) => updateAppUser(user.id, { role: e.target.value })}>
-                    {appUserRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  <select style={inputStyle} value={user.role} disabled={!canManageAppUser(user)} onChange={(e) => updateAppUser(user.id, { role: e.target.value })}>
+                    {appUserRoleOptions
+                      .filter(([value]) => currentProfile?.role === 'superadmin' || value !== 'superadmin')
+                      .map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
-                  <select style={inputStyle} value={user.status} onChange={(e) => updateAppUser(user.id, { status: e.target.value })}>
+                  <select style={inputStyle} value={user.status} disabled={!canManageAppUser(user)} onChange={(e) => updateAppUser(user.id, { status: e.target.value })}>
                     {appUserStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
                   </select>
                   <button
                     style={user.status === 'disabled' ? buttonStyle : dangerButtonStyle}
+                    disabled={!canManageAppUser(user)}
                     onClick={() => updateAppUser(user.id, { status: user.status === 'disabled' ? 'active' : 'disabled' })}
                   >
                     {user.status === 'disabled' ? 'Reativar' : 'Desativar'}
+                  </button>
+                  <button
+                    style={dangerButtonStyle}
+                    disabled={!canManageAppUser(user)}
+                    onClick={() => deleteAppUser(user)}
+                  >
+                    Apagar
                   </button>
                 </div>
               ))}
@@ -3491,7 +3535,7 @@ function EditorApp() {
 }
 
 createRoot(document.getElementById('root')).render(
-  <AuthGate requiredRoles={['admin']}>
-    <EditorApp />
+  <AuthGate requiredRoles={['admin']} exposeProfile>
+    {({ profile }) => <EditorApp currentProfile={profile} />}
   </AuthGate>
 )

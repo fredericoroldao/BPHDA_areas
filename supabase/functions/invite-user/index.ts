@@ -6,7 +6,7 @@ const corsHeaders = {
   'Access-Control-Allow-Methods': 'POST, OPTIONS',
 }
 
-const validRoles = new Set(['admin', 'viewer'])
+const validRoles = new Set(['superadmin', 'admin', 'viewer'])
 
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), {
@@ -73,7 +73,7 @@ Deno.serve(async (req) => {
     callerProfile = byEmail.data
   }
 
-  if (!callerProfile || callerProfile.role !== 'admin' || callerProfile.status === 'disabled') {
+  if (!callerProfile || !['superadmin', 'admin'].includes(callerProfile.role) || callerProfile.status === 'disabled') {
     return json({ error: 'Only admins can invite users' }, 403)
   }
 
@@ -89,6 +89,10 @@ Deno.serve(async (req) => {
 
   if (!validRoles.has(role)) {
     return json({ error: 'Invalid role' }, 400)
+  }
+
+  if (role === 'superadmin' && callerProfile.role !== 'superadmin') {
+    return json({ error: 'Only superadmins can invite superadmins' }, 403)
   }
 
   const { data: existingUser, error: existingError } = await admin

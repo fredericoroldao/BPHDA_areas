@@ -36,7 +36,7 @@ function normalizeEmail(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
-export default function AuthGate({ children, requiredRoles = [] }) {
+export default function AuthGate({ children, requiredRoles = [], exposeProfile = false }) {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
   const [loading, setLoading] = useState(true)
@@ -151,7 +151,9 @@ export default function AuthGate({ children, requiredRoles = [] }) {
     )
   }
 
-  if (requiredRoles.length && !requiredRoles.includes(profile.role)) {
+  const allowedRoles = requiredRoles.includes('admin') ? [...requiredRoles, 'superadmin'] : requiredRoles
+
+  if (allowedRoles.length && !allowedRoles.includes(profile.role)) {
     return (
       <div style={pageStyle}>
         <div style={panelStyle}>
@@ -176,7 +178,7 @@ export default function AuthGate({ children, requiredRoles = [] }) {
         </span>
         <button type="button" onClick={signOut} style={{ ...buttonStyle, minHeight: 30, padding: '5px 10px', background: '#fff' }}>Sair</button>
       </div>
-      {children}
+      {typeof children === 'function' && exposeProfile ? children({ session, profile, signOut }) : children}
     </>
   )
 }
