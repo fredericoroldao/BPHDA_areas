@@ -80,6 +80,8 @@ export default function AuthGate({ children, requiredRoles = [] }) {
 
     setLoading(true)
     const email = normalizeEmail(nextSession.user.email)
+    await supabase.rpc('claim_app_user')
+
     const { data, error: profileError } = await supabase
       .from('app_users')
       .select('id, user_id, email, name, role, status')

@@ -166,6 +166,17 @@ const dependencyTypeOptions = [
   ['related_to', 'Relacionada'],
 ]
 
+const appUserRoleOptions = [
+  ['admin', 'Admin'],
+  ['viewer', 'Viewer'],
+]
+
+const appUserStatusOptions = [
+  ['invited', 'Convidado'],
+  ['active', 'Ativo'],
+  ['disabled', 'Desativado'],
+]
+
 const DRAFT_WORK_ITEM_ID = '__draft_work_item__'
 
 function emptyArea() {
@@ -327,6 +338,9 @@ function EditorApp() {
   const [areaPeople, setAreaPeople] = useState([])
   const [functionPeople, setFunctionPeople] = useState([])
   const [workItemPeople, setWorkItemPeople] = useState([])
+  const [appUsers, setAppUsers] = useState([])
+  const [inviteForm, setInviteForm] = useState({ email: '', name: '', role: 'viewer' })
+  const [inviting, setInviting] = useState(false)
 
   const [selectedAreaId, setSelectedAreaId] = useState('')
   const [selectedFunctionId, setSelectedFunctionId] = useState('')
@@ -408,6 +422,7 @@ function EditorApp() {
       supabase.from('area_people').select('*'),
       supabase.from('function_people').select('*'),
       supabase.from('work_item_people').select('*'),
+      supabase.from('app_users').select('id, user_id, email, name, role, status, invited_at, created_at, updated_at').order('email', { ascending: true }),
     ])
 
     const firstError = results.find((r) => r.error)
@@ -426,6 +441,7 @@ function EditorApp() {
     setAreaPeople(results[5].data ?? [])
     setFunctionPeople(results[6].data ?? [])
     setWorkItemPeople(results[7].data ?? [])
+    setAppUsers(results[8].data ?? [])
     if (!silent) setLoading(false)
   }
 
@@ -704,6 +720,50 @@ function EditorApp() {
         setPersonForm({ ...person })
       }
     }
+  }
+
+  async function inviteAppUser() {
+    const email = inviteForm.email.trim().toLowerCase()
+    if (!email) {
+      setError('Indica o email do utilizador a convidar.')
+      return
+    }
+
+    setInviting(true)
+    setError('')
+    setMessage('')
+
+    const { data, error: inviteError } = await supabase.functions.invoke('invite-user', {
+      body: {
+        email,
+        name: inviteForm.name.trim(),
+        role: inviteForm.role,
+        redirectTo: window.location.origin,
+      },
+    })
+
+    if (inviteError || data?.error) {
+      setError(inviteError?.message ?? data?.error ?? 'Não foi possível enviar o convite.')
+      setInviting(false)
+      return
+    }
+
+    setInviteForm({ email: '', name: '', role: 'viewer' })
+    setMessage(`Convite enviado para ${email}.`)
+    setInviting(false)
+    await loadAll({ silent: true })
+  }
+
+  async function updateAppUser(id, patch) {
+    setError('')
+    setMessage('')
+    const { error: updateError } = await supabase.from('app_users').update(patch).eq('id', id)
+    if (updateError) {
+      setError(updateError.message)
+      return
+    }
+    setAppUsers((prev) => prev.map((user) => user.id === id ? { ...user, ...patch } : user))
+    setMessage('Utilizador atualizado.')
   }
 
   const filteredProjects = useMemo(() => {
@@ -3220,6 +3280,60 @@ function EditorApp() {
     )
   }
 
+  function renderUsersTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <strong style={{ display: 'block', marginBottom: 10 }}>Convidar utilizador</strong>
+          <div style={{ display: 'grid', gap: 10 }}>
+            <label>Email<input style={inputStyle} value={inviteForm.email} onChange={(e) => setInviteForm((s) => ({ ...s, email: e.target.value }))} placeholder="nome@dominio.com" /></label>
+            <label>Nome<input style={inputStyle} value={inviteForm.name} onChange={(e) => setInviteForm((s) => ({ ...s, name: e.target.value }))} placeholder="Opcional" /></label>
+            <label>
+              Perfil
+              <select style={inputStyle} value={inviteForm.role} onChange={(e) => setInviteForm((s) => ({ ...s, role: e.target.value }))}>
+                {appUserRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+              </select>
+            </label>
+            <button style={primaryButtonStyle} onClick={inviteAppUser} disabled={inviting}>
+              {inviting ? 'A enviar...' : 'Enviar convite'}
+            </button>
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          <strong style={{ display: 'block', marginBottom: 10 }}>Utilizadores da app</strong>
+          {appUsers.length ? (
+            <div style={{ display: 'grid', gap: 8 }}>
+              {appUsers.map((user) => (
+                <div key={user.id} style={{ ...subtleBoxStyle, display: 'grid', gridTemplateColumns: 'minmax(220px, 1fr) 150px 150px auto', gap: 8, alignItems: 'center' }}>
+                  <div>
+                    <strong>{user.email}</strong>
+                    {user.name ? <div style={{ fontSize: 12, color: '#5f6f66', marginTop: 3 }}>{user.name}</div> : null}
+                    <div style={{ fontSize: 11, color: '#5f6f66', marginTop: 3 }}>{user.user_id ? 'Ligado a Auth' : 'Ainda sem primeiro login'}</div>
+                  </div>
+                  <select style={inputStyle} value={user.role} onChange={(e) => updateAppUser(user.id, { role: e.target.value })}>
+                    {appUserRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  <select style={inputStyle} value={user.status} onChange={(e) => updateAppUser(user.id, { status: e.target.value })}>
+                    {appUserStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}
+                  </select>
+                  <button
+                    style={user.status === 'disabled' ? buttonStyle : dangerButtonStyle}
+                    onClick={() => updateAppUser(user.id, { status: user.status === 'disabled' ? 'active' : 'disabled' })}
+                  >
+                    {user.status === 'disabled' ? 'Reativar' : 'Desativar'}
+                  </button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: '#5f6f66' }}>Ainda não há utilizadores registados.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
   return (
     <>
       <style>{`
@@ -3314,6 +3428,7 @@ function EditorApp() {
             ['areas', 'Áreas'],
             ['people', 'Pessoas'],
             ['projects', 'Projetos'],
+            ['users', 'Utilizadores'],
           ].map(([key, label]) => (
             <button
               key={key}
@@ -3369,6 +3484,7 @@ function EditorApp() {
         {!loading && tab === 'areas' ? renderAreasTab() : null}
         {!loading && tab === 'projects' ? renderProjectsTab() : null}
         {!loading && tab === 'people' ? renderPeopleTab() : null}
+        {!loading && tab === 'users' ? renderUsersTab() : null}
       </div>
     </>
   )

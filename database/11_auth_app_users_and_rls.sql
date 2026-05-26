@@ -99,10 +99,13 @@ using (is_app_admin());
 -- Primeiro admin. Alterar se for necessário.
 insert into app_users (email, name, role, status)
 values ('fredericoroldao@gmail.com', 'Frederico Roldao', 'admin', 'active')
-on conflict (lower(email)) do update
+on conflict do nothing;
+
+update app_users
 set role = 'admin',
     status = 'active',
-    updated_at = now();
+    updated_at = now()
+where lower(email) = 'fredericoroldao@gmail.com';
 
 -- Remover políticas antigas permissivas.
 drop policy if exists "public can read people" on people;
