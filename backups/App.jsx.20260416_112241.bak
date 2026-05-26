@@ -1,0 +1,1733 @@
+import { useEffect, useMemo, useState } from 'react'
+import { supabase } from './supabaseClient'
+
+function formatTaskName(name) {
+  return `[${name}]`
+}
+
+function formatTaskWithResponsible(name, responsibleName) {
+  return responsibleName ? `${formatTaskName(name)} (${responsibleName})` : formatTaskName(name)
+}
+
+function formatTaskResponsibleList(items) {
+  const clean = (items ?? []).filter((item) => item?.name)
+
+  if (!clean.length) return 'nada'
+  if (clean.length === 1) return formatTaskWithResponsible(clean[0].name, clean[0].responsibleName)
+  if (clean.length === 2) {
+    return `${formatTaskWithResponsible(clean[0].name, clean[0].responsibleName)} e ${formatTaskWithResponsible(clean[1].name, clean[1].responsibleName)}`
+  }
+
+  return `${clean
+    .slice(0, -1)
+    .map((item) => formatTaskWithResponsible(item.name, item.responsibleName))
+    .join(', ')} e ${formatTaskWithResponsible(clean[clean.length - 1].name, clean[clean.length - 1].responsibleName)}`
+}
+
+function formatBracketedTaskList(items) {
+  const uniqueItems = [...new Set((items ?? []).filter(Boolean))]
+
+  if (!uniqueItems.length) return 'nada'
+  if (uniqueItems.length === 1) return formatTaskName(uniqueItems[0])
+  if (uniqueItems.length === 2) {
+    return `${formatTaskName(uniqueItems[0])} e ${formatTaskName(uniqueItems[1])}`
+  }
+
+  return `${uniqueItems
+    .slice(0, -1)
+    .map((item) => formatTaskName(item))
+    .join(', ')} e ${formatTaskName(uniqueItems[uniqueItems.length - 1])}`
+}
+
+function roleLabel(role) {
+  const labels = {
+    lead: 'Responsável',
+    co_lead: 'Co-responsável',
+    support: 'Apoio',
+    informed: 'Informado',
+    owner: 'Responsável',
+    co_owner: 'Co-responsável',
+    assignee: 'Executante',
+    contributor: 'Contribui',
+    approver: 'Aprova',
+    reviewer: 'Revê',
+    watcher: 'Acompanha',
+  }
+
+  return labels[role] ?? role
+}
+
+function isFinishedStatus(status) {
+  return status === 'done' || status === 'cancelled'
+}
+
+function findProject(workItem, workItemMap) {
+  let current = workItem
+  const visited = new Set()
+
+  while (current) {
+    if (visited.has(current.id)) return null
+    visited.add(current.id)
+
+    if (current.type === 'project') return current
+    if (!current.parent_work_item_id) return null
+
+    current = workItemMap.get(current.parent_work_item_id)
+  }
+
+  return null
+}
+
+function getDependencyStatus(dependency, predecessorItem) {
+  if (dependency.dependency_type === 'related_to') {
+    return {
+      isSatisfied: true,
+      countsForBlocking: false,
+    }
+  }
+
+  if (!predecessorItem) {
+    return {
+      isSatisfied: false,
+      countsForBlocking: true,
+    }
+  }
+
+  if (dependency.dependency_type === 'start_to_start') {
+    return {
+      isSatisfied: predecessorItem.status !== 'not_started',
+      countsForBlocking: true,
+    }
+  }
+
+  return {
+    isSatisfied: predecessorItem.status === 'done',
+    countsForBlocking: true,
+  }
+}
+
+function getTaskVisualState(workItem, dependenciesBySuccessor, workItemMap) {
+  if (!workItem) return { key: 'unknown', label: 'desconhecido' }
+  if (workItem.status === 'done') return { key: 'done', label: 'concluída' }
+  if (workItem.status === 'cancelled') return { key: 'cancelled', label: 'cancelada' }
+  if (workItem.status === 'blocked') return { key: 'blocked', label: 'bloqueada' }
+
+  const predecessors = dependenciesBySuccessor.get(workItem.id) ?? []
+
+  const hasUnsatisfiedBlockingDependency = predecessors.some((dependency) => {
+    const predecessorItem = workItemMap.get(dependency.predecessor_work_item_id)
+    const dependencyStatus = getDependencyStatus(dependency, predecessorItem)
+    return dependencyStatus.countsForBlocking && !dependencyStatus.isSatisfied
+  })
+
+  if (workItem.status === 'in_progress') return { key: 'in_progress', label: 'em curso' }
+  if (hasUnsatisfiedBlockingDependency) return { key: 'waiting', label: 'à espera' }
+  return { key: 'ready', label: 'pronta a arrancar' }
+}
+
+function buildDependencyExplanation(dependencyType, predecessorLabel, successorLabel) {
+  if (dependencyType === 'finish_to_start') {
+    return `${formatTaskName(successorLabel)} só pode começar depois de ${formatTaskName(predecessorLabel)} terminar.`
+  }
+
+  if (dependencyType === 'start_to_start') {
+    return `${formatTaskName(successorLabel)} só pode começar quando ${formatTaskName(predecessorLabel)} começar.`
+  }
+
+  if (dependencyType === 'finish_to_finish') {
+    return `${formatTaskName(successorLabel)} só pode terminar depois de ${formatTaskName(predecessorLabel)} terminar.`
+  }
+
+  if (dependencyType === 'blocks') {
+    return `Enquanto ${formatTaskName(predecessorLabel)} não estiver resolvida, ${formatTaskName(successorLabel)} fica bloqueada.`
+  }
+
+  return `${formatTaskName(successorLabel)} está relacionada com ${formatTaskName(predecessorLabel)}.`
+}
+
+function toggleInOrderedArray(prev, id) {
+  return prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]
+}
+
+const smallButtonStyle = {
+  padding: '6px 10px',
+  borderRadius: 999,
+  border: '1px solid #d9e3d3',
+  background: '#ffffff',
+  color: '#21402b',
+  cursor: 'pointer',
+  fontSize: 12,
+  lineHeight: 1.1,
+}
+
+const sectionBoxStyle = {
+  border: '1px solid #e3eadf',
+  borderRadius: 10,
+  padding: 10,
+  background: '#fbfcfa',
+}
+
+const sectionTitleStyle = {
+  fontSize: 11,
+  fontWeight: 700,
+  color: '#35513c',
+  marginBottom: 8,
+  textTransform: 'uppercase',
+  letterSpacing: '0.03em',
+}
+
+const cardStyle = {
+  flex: '0 0 500px',
+  width: 500,
+  maxWidth: 500,
+  minWidth: 500,
+  background: '#ffffff',
+  border: '1px solid #dfe7da',
+  borderRadius: 14,
+  padding: 14,
+  boxShadow: '0 1px 2px rgba(16, 24, 40, 0.04)',
+  alignSelf: 'flex-start',
+  overflow: 'hidden',
+  textAlign: 'left',
+}
+
+function LeftRailButton({ isOpen, children, onClick }) {
+  return (
+    <button
+      onClick={onClick}
+      style={{
+        width: '100%',
+        textAlign: 'left',
+        padding: '8px 10px',
+        borderRadius: 8,
+        border: isOpen ? '1px solid #b7cda8' : '1px solid #dfe7da',
+        background: isOpen ? '#e8f2e0' : '#ffffff',
+        color: '#1d2a21',
+        cursor: 'pointer',
+        fontSize: 13,
+        lineHeight: 1.2,
+        overflowWrap: 'anywhere',
+        wordBreak: 'break-word',
+      }}
+    >
+      {children}
+    </button>
+  )
+}
+
+export default function App() {
+  const [areas, setAreas] = useState([])
+  const [functions, setFunctions] = useState([])
+  const [areaPeople, setAreaPeople] = useState([])
+  const [functionPeople, setFunctionPeople] = useState([])
+  const [workItems, setWorkItems] = useState([])
+  const [workItemPeople, setWorkItemPeople] = useState([])
+  const [workItemDependencies, setWorkItemDependencies] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [error, setError] = useState('')
+  const [activeView, setActiveView] = useState('areas')
+  const [openAreaIds, setOpenAreaIds] = useState([])
+  const [openPersonIds, setOpenPersonIds] = useState([])
+
+  useEffect(() => {
+    loadData()
+  }, [])
+
+  async function loadData() {
+    setLoading(true)
+    setError('')
+
+    const [
+      areasResult,
+      functionsResult,
+      areaPeopleResult,
+      functionPeopleResult,
+      workItemsResult,
+      workItemPeopleResult,
+      workItemDependenciesResult,
+    ] = await Promise.all([
+      supabase
+        .from('areas')
+        .select('id, name, description, sort_order')
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
+
+      supabase
+        .from('functions')
+        .select('id, area_id, parent_function_id, name, description, level, sort_order')
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
+
+      supabase
+        .from('area_people')
+        .select(`
+          id,
+          area_id,
+          assignment_role,
+          is_primary,
+          person:people (
+            id,
+            name
+          )
+        `),
+
+      supabase
+        .from('function_people')
+        .select(`
+          id,
+          function_id,
+          assignment_role,
+          is_primary,
+          person:people (
+            id,
+            name
+          )
+        `),
+
+      supabase
+        .from('work_items')
+        .select(`
+          id,
+          parent_work_item_id,
+          type,
+          name,
+          status,
+          sort_order,
+          priority,
+          phase
+        `)
+        .order('sort_order', { ascending: true })
+        .order('name', { ascending: true }),
+
+      supabase
+        .from('work_item_people')
+        .select(`
+          id,
+          work_item_id,
+          assignment_role,
+          is_primary,
+          person:people (
+            id,
+            name
+          )
+        `),
+
+      supabase
+        .from('work_item_dependencies')
+        .select(`
+          id,
+          predecessor_work_item_id,
+          successor_work_item_id,
+          dependency_type,
+          lag_days,
+          note
+        `),
+    ])
+
+    if (areasResult.error) {
+      setError(`Erro a carregar áreas: ${areasResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (functionsResult.error) {
+      setError(`Erro a carregar funções: ${functionsResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (areaPeopleResult.error) {
+      setError(`Erro a carregar responsáveis de área: ${areaPeopleResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (functionPeopleResult.error) {
+      setError(`Erro a carregar responsáveis de função: ${functionPeopleResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (workItemsResult.error) {
+      setError(`Erro a carregar projetos e tarefas: ${workItemsResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (workItemPeopleResult.error) {
+      setError(`Erro a carregar envolvimento em projetos e tarefas: ${workItemPeopleResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    if (workItemDependenciesResult.error) {
+      setError(`Erro a carregar dependências: ${workItemDependenciesResult.error.message}`)
+      setLoading(false)
+      return
+    }
+
+    setAreas(areasResult.data ?? [])
+    setFunctions(functionsResult.data ?? [])
+    setAreaPeople(areaPeopleResult.data ?? [])
+    setFunctionPeople(functionPeopleResult.data ?? [])
+    setWorkItems(workItemsResult.data ?? [])
+    setWorkItemPeople(workItemPeopleResult.data ?? [])
+    setWorkItemDependencies(workItemDependenciesResult.data ?? [])
+    setLoading(false)
+  }
+
+  const areaMap = useMemo(() => {
+    const map = new Map()
+    for (const area of areas) map.set(area.id, area)
+    return map
+  }, [areas])
+
+  const functionMap = useMemo(() => {
+    const map = new Map()
+    for (const fn of functions) map.set(fn.id, fn)
+    return map
+  }, [functions])
+
+  const workItemMap = useMemo(() => {
+    const map = new Map()
+    for (const item of workItems) map.set(item.id, item)
+    return map
+  }, [workItems])
+
+  const childrenByParent = useMemo(() => {
+    const map = new Map()
+
+    for (const item of workItems) {
+      if (!item.parent_work_item_id) continue
+      if (!map.has(item.parent_work_item_id)) map.set(item.parent_work_item_id, [])
+      map.get(item.parent_work_item_id).push(item)
+    }
+
+    for (const children of map.values()) {
+      children.sort((a, b) => {
+        const aSort = a.sort_order ?? 0
+        const bSort = b.sort_order ?? 0
+        if (aSort !== bSort) return aSort - bSort
+        return a.name.localeCompare(b.name, 'pt')
+      })
+    }
+
+    return map
+  }, [workItems])
+
+  const dependenciesBySuccessor = useMemo(() => {
+    const grouped = new Map()
+    for (const dep of workItemDependencies) {
+      if (!grouped.has(dep.successor_work_item_id)) grouped.set(dep.successor_work_item_id, [])
+      grouped.get(dep.successor_work_item_id).push(dep)
+    }
+    return grouped
+  }, [workItemDependencies])
+
+  const dependenciesByPredecessor = useMemo(() => {
+    const grouped = new Map()
+    for (const dep of workItemDependencies) {
+      if (!grouped.has(dep.predecessor_work_item_id)) grouped.set(dep.predecessor_work_item_id, [])
+      grouped.get(dep.predecessor_work_item_id).push(dep)
+    }
+    return grouped
+  }, [workItemDependencies])
+
+  const primaryPersonByWorkItem = useMemo(() => {
+    const rolePriority = {
+      owner: 1,
+      assignee: 2,
+      approver: 3,
+      reviewer: 4,
+      contributor: 5,
+      watcher: 6,
+    }
+
+    const grouped = new Map()
+
+    for (const item of workItemPeople) {
+      if (!grouped.has(item.work_item_id)) grouped.set(item.work_item_id, [])
+      grouped.get(item.work_item_id).push(item)
+    }
+
+    const result = new Map()
+
+    for (const [workItemId, items] of grouped.entries()) {
+      items.sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1
+        const aPriority = rolePriority[a.assignment_role] ?? 999
+        const bPriority = rolePriority[b.assignment_role] ?? 999
+        if (aPriority !== bPriority) return aPriority - bPriority
+        return (a.person?.name ?? '').localeCompare(b.person?.name ?? '', 'pt')
+      })
+
+      result.set(workItemId, items[0]?.person?.name ?? null)
+    }
+
+    return result
+  }, [workItemPeople])
+
+  const areaPeopleByArea = useMemo(() => {
+    const grouped = {}
+
+    for (const item of areaPeople) {
+      if (!grouped[item.area_id]) grouped[item.area_id] = []
+      grouped[item.area_id].push(item)
+    }
+
+    for (const areaId of Object.keys(grouped)) {
+      grouped[areaId].sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1
+        return (a.person?.name ?? '').localeCompare(b.person?.name ?? '', 'pt')
+      })
+    }
+
+    return grouped
+  }, [areaPeople])
+
+  const functionPeopleByFunction = useMemo(() => {
+    const grouped = {}
+
+    for (const item of functionPeople) {
+      if (!grouped[item.function_id]) grouped[item.function_id] = []
+      grouped[item.function_id].push(item)
+    }
+
+    for (const functionId of Object.keys(grouped)) {
+      grouped[functionId].sort((a, b) => {
+        if (a.is_primary !== b.is_primary) return a.is_primary ? -1 : 1
+        return (a.person?.name ?? '').localeCompare(b.person?.name ?? '', 'pt')
+      })
+    }
+
+    return grouped
+  }, [functionPeople])
+
+  const functionsByArea = useMemo(() => {
+    const grouped = {}
+
+    for (const fn of functions) {
+      if (!grouped[fn.area_id]) grouped[fn.area_id] = []
+      grouped[fn.area_id].push(fn)
+    }
+
+    for (const areaId of Object.keys(grouped)) {
+      grouped[areaId].sort((a, b) => {
+        const aSort = a.sort_order ?? 0
+        const bSort = b.sort_order ?? 0
+        if (aSort !== bSort) return aSort - bSort
+        return a.name.localeCompare(b.name, 'pt')
+      })
+    }
+
+    return grouped
+  }, [functions])
+
+  function collectPendingLeaves(itemId) {
+    const children = childrenByParent.get(itemId) ?? []
+
+    if (!children.length) {
+      const item = workItemMap.get(itemId)
+      if (!item || isFinishedStatus(item.status)) return []
+      return [item]
+    }
+
+    const result = []
+    for (const child of children) result.push(...collectPendingLeaves(child.id))
+    return result
+  }
+
+  function collectConcreteBlockingItems(itemId, visited = new Set()) {
+    if (!itemId || visited.has(itemId)) return []
+    visited.add(itemId)
+
+    const deps = dependenciesBySuccessor.get(itemId) ?? []
+    const result = []
+
+    for (const dependency of deps) {
+      if (dependency.dependency_type === 'related_to') continue
+
+      const predecessor = workItemMap.get(dependency.predecessor_work_item_id)
+      const dependencyStatus = getDependencyStatus(dependency, predecessor)
+
+      if (dependencyStatus.isSatisfied || !predecessor) continue
+
+      const pendingLeaves = collectPendingLeaves(predecessor.id)
+
+      if (pendingLeaves.length) {
+        for (const leaf of pendingLeaves) {
+          const upstream = collectConcreteBlockingItems(leaf.id, visited)
+          if (upstream.length) result.push(...upstream)
+          else result.push(leaf)
+        }
+      } else if (!isFinishedStatus(predecessor.status)) {
+        result.push(predecessor)
+      }
+    }
+
+    const unique = []
+    const seen = new Set()
+
+    for (const item of result) {
+      if (!item?.id || seen.has(item.id)) continue
+      seen.add(item.id)
+      unique.push(item)
+    }
+
+    return unique
+  }
+
+  function buildStateLabel(workItem) {
+    if (!workItem) return 'desconhecido'
+
+    const children = childrenByParent.get(workItem.id) ?? []
+
+    if (children.length) {
+      const pendingLeaves = collectPendingLeaves(workItem.id)
+      if (!pendingLeaves.length) return 'concluído'
+
+      return `por concluir: ${formatTaskResponsibleList(
+        pendingLeaves.map((item) => ({
+          name: item.name,
+          responsibleName: primaryPersonByWorkItem.get(item.id) ?? null,
+        }))
+      )}`
+    }
+
+    const visualState = getTaskVisualState(workItem, dependenciesBySuccessor, workItemMap)
+
+    if (visualState.key === 'waiting') {
+      const blockers = collectConcreteBlockingItems(workItem.id)
+      return `à espera de ${formatTaskResponsibleList(
+        blockers.map((item) => ({
+          name: item.name,
+          responsibleName: primaryPersonByWorkItem.get(item.id) ?? null,
+        }))
+      )}`
+    }
+
+    return visualState.label
+  }
+
+  const projectLevelsByProjectId = useMemo(() => {
+    const result = new Map()
+
+    for (const project of workItems.filter((item) => item.type === 'project')) {
+      const descendants = []
+      const stack = [...(childrenByParent.get(project.id) ?? [])]
+
+      while (stack.length) {
+        const current = stack.shift()
+        descendants.push(current)
+        const children = childrenByParent.get(current.id) ?? []
+        stack.unshift(...children)
+      }
+
+      const descendantIds = new Set(descendants.map((item) => item.id))
+      const incoming = new Map()
+      const outgoing = new Map()
+
+      for (const item of descendants) {
+        incoming.set(item.id, [])
+        outgoing.set(item.id, [])
+      }
+
+      for (const item of descendants) {
+        if (item.parent_work_item_id && descendantIds.has(item.parent_work_item_id)) {
+          incoming.get(item.id).push(item.parent_work_item_id)
+          outgoing.get(item.parent_work_item_id).push(item.id)
+        }
+      }
+
+      for (const dep of workItemDependencies) {
+        if (dep.dependency_type === 'related_to') continue
+
+        if (descendantIds.has(dep.predecessor_work_item_id) && descendantIds.has(dep.successor_work_item_id)) {
+          incoming.get(dep.successor_work_item_id).push(dep.predecessor_work_item_id)
+          outgoing.get(dep.predecessor_work_item_id).push(dep.successor_work_item_id)
+        }
+      }
+
+      const indegree = new Map()
+      for (const item of descendants) indegree.set(item.id, (incoming.get(item.id) ?? []).length)
+
+      const ready = descendants
+        .filter((item) => (indegree.get(item.id) ?? 0) === 0)
+        .sort((a, b) => {
+          const aSort = a.sort_order ?? 0
+          const bSort = b.sort_order ?? 0
+          if (aSort !== bSort) return aSort - bSort
+          return a.name.localeCompare(b.name, 'pt')
+        })
+
+      const levelById = new Map()
+
+      while (ready.length) {
+        const current = ready.shift()
+        const parents = incoming.get(current.id) ?? []
+        const level = parents.length === 0 ? 0 : Math.max(...parents.map((parentId) => levelById.get(parentId) ?? 0)) + 1
+        levelById.set(current.id, level)
+
+        for (const nextId of outgoing.get(current.id) ?? []) {
+          indegree.set(nextId, (indegree.get(nextId) ?? 0) - 1)
+          if ((indegree.get(nextId) ?? 0) === 0) {
+            const nextItem = workItemMap.get(nextId)
+            if (nextItem) ready.push(nextItem)
+          }
+        }
+      }
+
+      const levels = []
+      const ordered = descendants
+        .slice()
+        .sort((a, b) => {
+          const aLevel = levelById.get(a.id) ?? 999
+          const bLevel = levelById.get(b.id) ?? 999
+          if (aLevel !== bLevel) return aLevel - bLevel
+
+          const aSort = a.sort_order ?? 0
+          const bSort = b.sort_order ?? 0
+          if (aSort !== bSort) return aSort - bSort
+          return a.name.localeCompare(b.name, 'pt')
+        })
+
+      for (const item of ordered) {
+        const level = levelById.get(item.id) ?? 0
+        if (!levels[level]) levels[level] = []
+        levels[level].push(item)
+      }
+
+      result.set(project.id, levels.filter(Boolean))
+    }
+
+    return result
+  }, [workItems, childrenByParent, workItemDependencies, workItemMap])
+
+  function buildTaskSummary(task, personName) {
+    const unlockedTasks = (task.successors ?? []).map((item) => item.rawName)
+
+    if (task.visualState.key === 'waiting') {
+      return [
+        `${personName} ainda não pode avançar com ${formatTaskName(task.name)}.`,
+        `Falta concluir ${formatTaskResponsibleList(task.blockingItems)} antes de começar.`,
+      ]
+    }
+
+    if (task.visualState.key === 'ready') {
+      return [
+        `${personName} pode avançar já com ${formatTaskName(task.name)}.`,
+        unlockedTasks.length
+          ? `Quando ${personName} terminar, ${formatBracketedTaskList(unlockedTasks)} ${unlockedTasks.length > 1 ? 'podem' : 'pode'} avançar.`
+          : 'Não há impacto direto noutras tarefas neste momento.',
+      ]
+    }
+
+    if (task.visualState.key === 'in_progress') {
+      return [
+        `${personName} está a trabalhar em ${formatTaskName(task.name)}.`,
+        unlockedTasks.length
+          ? `Quando ${personName} terminar, ${formatBracketedTaskList(unlockedTasks)} ${unlockedTasks.length > 1 ? 'podem' : 'pode'} avançar.`
+          : 'Não há impacto direto noutras tarefas neste momento.',
+      ]
+    }
+
+    if (task.visualState.key === 'done') {
+      return [
+        `${personName} já concluiu ${formatTaskName(task.name)}.`,
+        unlockedTasks.length
+          ? `${formatBracketedTaskList(unlockedTasks)} ${unlockedTasks.length > 1 ? 'ficam' : 'fica'} com caminho aberto para avançar.`
+          : 'Esta conclusão não cria novos desbloqueios diretos neste momento.',
+      ]
+    }
+
+    return [
+      `Estado atual de ${formatTaskName(task.name)} disponível.`,
+      'Consulta os detalhes abaixo.',
+    ]
+  }
+
+  function buildNextAction(task) {
+    if (task.visualState.key === 'waiting') {
+      return `acompanhar tarefas que estão a bloquear: ${formatBracketedTaskList(task.blockingItems.map((item) => item.name))}`
+    }
+
+    if (task.visualState.key === 'ready') {
+      return `${formatTaskName(task.name.toLowerCase())} e marcar como concluída quando terminar`
+    }
+
+    if (task.visualState.key === 'in_progress') {
+      return `continuar ${formatTaskName(task.name.toLowerCase())} até concluir`
+    }
+
+    if (task.visualState.key === 'done') {
+      return 'validar se as tarefas seguintes já avançaram'
+    }
+
+    return 'acompanhar estado da tarefa'
+  }
+
+  const peopleViewData = useMemo(() => {
+    const peopleMap = new Map()
+
+    function ensurePerson(person) {
+      if (!person?.id) return null
+
+      if (!peopleMap.has(person.id)) {
+        peopleMap.set(person.id, {
+          id: person.id,
+          name: person.name ?? 'Sem nome',
+          areas: [],
+          functions: [],
+          projectsMap: new Map(),
+        })
+      }
+
+      return peopleMap.get(person.id)
+    }
+
+    for (const item of areaPeople) {
+      const personEntry = ensurePerson(item.person)
+      const area = areaMap.get(item.area_id)
+      if (!personEntry || !area) continue
+
+      personEntry.areas.push({
+        id: item.id,
+        areaName: area.name,
+        sortOrder: area.sort_order ?? 0,
+      })
+    }
+
+    for (const item of functionPeople) {
+      const personEntry = ensurePerson(item.person)
+      const fn = functionMap.get(item.function_id)
+      if (!personEntry || !fn) continue
+
+      const area = areaMap.get(fn.area_id)
+
+      personEntry.functions.push({
+        id: item.id,
+        label: `${area?.name ?? 'Sem área'}: ${fn.name}`,
+        areaSortOrder: area?.sort_order ?? 0,
+        functionSortOrder: fn.sort_order ?? 0,
+      })
+    }
+
+    for (const item of workItemPeople) {
+      const personEntry = ensurePerson(item.person)
+      const workItem = workItemMap.get(item.work_item_id)
+      if (!personEntry || !workItem) continue
+
+      const project = findProject(workItem, workItemMap)
+      const projectKey = project?.id ?? `no-project:${workItem.id}`
+
+      if (!personEntry.projectsMap.has(projectKey)) {
+        personEntry.projectsMap.set(projectKey, {
+          id: project?.id ?? null,
+          name: project?.name ?? 'Sem projeto associado',
+          sortOrder: project?.sort_order ?? 999999,
+          projectAssignments: [],
+          tasks: [],
+        })
+      }
+
+      const projectEntry = personEntry.projectsMap.get(projectKey)
+
+      if (workItem.type === 'project') {
+        projectEntry.projectAssignments.push({
+          id: item.id,
+          assignmentRole: item.assignment_role,
+          isPrimary: item.is_primary,
+        })
+      } else {
+        const visualState = getTaskVisualState(workItem, dependenciesBySuccessor, workItemMap)
+        const currentStateLabel = buildStateLabel(workItem)
+        const blockingConcreteItems = collectConcreteBlockingItems(workItem.id)
+
+        const blockingItems = blockingConcreteItems.map((blocker) => ({
+          id: blocker.id,
+          name: blocker.name,
+          responsibleName: primaryPersonByWorkItem.get(blocker.id) ?? null,
+          stateLabel: buildStateLabel(blocker),
+        }))
+
+        const predecessors = blockingConcreteItems.map((blocker) => ({
+          id: blocker.id,
+          rawName: blocker.name,
+          shortLabel: formatTaskName(blocker.name),
+          responsibleName: primaryPersonByWorkItem.get(blocker.id) ?? null,
+          relatedTaskStateLabel: buildStateLabel(blocker),
+          explanation: buildDependencyExplanation('finish_to_start', blocker.name, workItem.name),
+        }))
+
+        const successors = (dependenciesByPredecessor.get(workItem.id) ?? [])
+          .map((dependency) => {
+            const successorItem = workItemMap.get(dependency.successor_work_item_id)
+            if (!successorItem) return null
+
+            const successorBlockingItems = collectConcreteBlockingItems(successorItem.id).map((blocker) => ({
+              name: blocker.name,
+              responsibleName: primaryPersonByWorkItem.get(blocker.id) ?? null,
+            }))
+
+            return {
+              id: dependency.id,
+              rawName: successorItem.name,
+              shortLabel: formatTaskName(successorItem.name),
+              responsibleName: primaryPersonByWorkItem.get(successorItem.id) ?? null,
+              relatedTaskStateLabel: successorBlockingItems.length
+                ? `à espera de ${formatTaskResponsibleList(successorBlockingItems)}`
+                : buildStateLabel(successorItem),
+              explanation: buildDependencyExplanation(dependency.dependency_type, workItem.name, successorItem.name),
+            }
+          })
+          .filter(Boolean)
+
+        projectEntry.tasks.push({
+          id: item.id,
+          name: workItem.name,
+          assignmentRole: item.assignment_role,
+          sortOrder: workItem.sort_order ?? 0,
+          visualState,
+          currentStateLabel,
+          blockingItems,
+          predecessors,
+          successors,
+          projectPendingItems: project
+            ? collectPendingLeaves(project.id).map((pending) => ({
+                name: pending.name,
+                responsibleName: primaryPersonByWorkItem.get(pending.id) ?? null,
+                sortOrder: pending.sort_order ?? 0,
+              }))
+            : [],
+          projectLevels: project?.id ? projectLevelsByProjectId.get(project.id) ?? [] : [],
+        })
+      }
+    }
+
+    const result = Array.from(peopleMap.values())
+
+    for (const person of result) {
+      person.areas.sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder
+        return a.areaName.localeCompare(b.areaName, 'pt')
+      })
+
+      person.functions.sort((a, b) => {
+        if (a.areaSortOrder !== b.areaSortOrder) return a.areaSortOrder - b.areaSortOrder
+        if (a.functionSortOrder !== b.functionSortOrder) return a.functionSortOrder - b.functionSortOrder
+        return a.label.localeCompare(b.label, 'pt')
+      })
+
+      person.projects = Array.from(person.projectsMap.values())
+
+      for (const project of person.projects) {
+        project.projectAssignments.sort((a, b) => {
+          if (a.isPrimary !== b.isPrimary) return a.isPrimary ? -1 : 1
+          return a.assignmentRole.localeCompare(b.assignmentRole, 'pt')
+        })
+
+        project.tasks.sort((a, b) => {
+          const aSort = a.sortOrder ?? 0
+          const bSort = b.sortOrder ?? 0
+          if (aSort !== bSort) return aSort - bSort
+          return a.name.localeCompare(b.name, 'pt')
+        })
+
+        project.taskNames = [...new Set(project.tasks.map((task) => task.name))]
+      }
+
+      person.projects.sort((a, b) => {
+        if (a.sortOrder !== b.sortOrder) return a.sortOrder - b.sortOrder
+        return a.name.localeCompare(b.name, 'pt')
+      })
+
+      delete person.projectsMap
+    }
+
+    result.sort((a, b) => a.name.localeCompare(b.name, 'pt'))
+    return result
+  }, [
+    areaPeople,
+    functionPeople,
+    workItemPeople,
+    areaMap,
+    functionMap,
+    workItemMap,
+    dependenciesBySuccessor,
+    dependenciesByPredecessor,
+    primaryPersonByWorkItem,
+    projectLevelsByProjectId,
+  ])
+
+  const openAreas = useMemo(() => {
+    const map = new Map(areas.map((area) => [area.id, area]))
+    return openAreaIds.map((id) => map.get(id)).filter(Boolean)
+  }, [openAreaIds, areas])
+
+  const openPeople = useMemo(() => {
+    const map = new Map(peopleViewData.map((person) => [person.id, person]))
+    return openPersonIds.map((id) => map.get(id)).filter(Boolean)
+  }, [openPersonIds, peopleViewData])
+
+  function renderFunctionResponsibleNames(functionId) {
+    const items = functionPeopleByFunction[functionId] ?? []
+    const names = items.map((item) => item.person?.name).filter(Boolean)
+    if (!names.length) return null
+
+    return (
+      <div
+        style={{
+          fontSize: 11,
+          color: '#5f6f66',
+          lineHeight: 1.3,
+          marginTop: 2,
+          textAlign: 'left',
+          overflowWrap: 'anywhere',
+          wordBreak: 'break-word',
+        }}
+      >
+        {names.join(', ')}
+      </div>
+    )
+  }
+
+  function renderAreaCard(area) {
+    const functionsList = functionsByArea[area.id] ?? []
+
+    return (
+      <section key={area.id} style={cardStyle}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 10,
+            alignItems: 'flex-start',
+            marginBottom: 10,
+          }}
+        >
+          <div style={{ minWidth: 0, flex: 1 }}>
+            <div
+              style={{
+                fontSize: 20,
+                fontWeight: 700,
+                color: '#16361f',
+                lineHeight: 1.05,
+                textAlign: 'left',
+                overflowWrap: 'anywhere',
+                wordBreak: 'break-word',
+              }}
+            >
+              {area.name}
+            </div>
+
+            {(areaPeopleByArea[area.id] ?? []).length ? (
+              <div
+                style={{
+                  marginTop: 4,
+                  fontSize: 12,
+                  color: '#5f6f66',
+                  lineHeight: 1.3,
+                  textAlign: 'left',
+                  overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {(areaPeopleByArea[area.id] ?? [])
+                  .map((item) => item.person?.name)
+                  .filter(Boolean)
+                  .join(', ')}
+              </div>
+            ) : null}
+          </div>
+
+          <button
+            onClick={() => setOpenAreaIds((prev) => toggleInOrderedArray(prev, area.id))}
+            style={smallButtonStyle}
+          >
+            -
+          </button>
+        </div>
+
+        <ul
+          style={{
+            margin: 0,
+            paddingLeft: 18,
+            display: 'grid',
+            gap: 7,
+            textAlign: 'left',
+          }}
+        >
+          {functionsList.map((fn) => (
+            <li
+              key={fn.id}
+              style={{
+                fontSize: 13,
+                color: '#1d2a21',
+                lineHeight: 1.35,
+                textAlign: 'left',
+                overflowWrap: 'anywhere',
+                wordBreak: 'break-word',
+              }}
+            >
+              <div>{fn.name}</div>
+              {renderFunctionResponsibleNames(fn.id)}
+            </li>
+          ))}
+        </ul>
+      </section>
+    )
+  }
+
+  function renderRelationshipSection(title, items, emptyText) {
+    return (
+      <div style={{ marginTop: 10, textAlign: 'left' }}>
+        <div style={sectionTitleStyle}>{title}</div>
+
+        {items?.length ? (
+          <div style={{ display: 'grid', gap: 6 }}>
+            {items.map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  background: '#ffffff',
+                  border: '1px solid #dfe7da',
+                  borderRadius: 8,
+                  padding: '8px 9px',
+                  textAlign: 'left',
+                  overflow: 'hidden',
+                }}
+              >
+                <div
+                  style={{
+                    fontSize: 12,
+                    fontWeight: 600,
+                    color: '#35513c',
+                    lineHeight: 1.4,
+                    textAlign: 'left',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {item.shortLabel}
+                  {item.responsibleName ? ` (${item.responsibleName})` : ''}: {item.relatedTaskStateLabel}
+                </div>
+
+                <div
+                  style={{
+                    marginTop: 3,
+                    fontSize: 11,
+                    color: '#5f6f66',
+                    lineHeight: 1.4,
+                    textAlign: 'left',
+                    overflowWrap: 'anywhere',
+                    wordBreak: 'break-word',
+                  }}
+                >
+                  {item.explanation}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div
+            style={{
+              fontSize: 12,
+              color: '#7a887f',
+              textAlign: 'left',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+            }}
+          >
+            {emptyText}
+          </div>
+        )}
+      </div>
+    )
+  }
+
+  function buildProjectInvolvementText(project) {
+    const roleLabels = [...new Set(project.projectAssignments.map((item) => roleLabel(item.assignmentRole)))]
+    const taskPart = project.taskNames?.length ? formatBracketedTaskList(project.taskNames) : ''
+
+    if (roleLabels.length && taskPart) return `${roleLabels.join(' + ')} + ${taskPart}`
+    if (roleLabels.length) return roleLabels.join(' + ')
+    if (taskPart) return taskPart
+    return 'Sem detalhe adicional.'
+  }
+
+  function renderSequenceLevels(task) {
+    const levels = task.projectLevels ?? []
+    if (!levels.length) return null
+
+    return (
+      <div
+        style={{
+          display: 'flex',
+          gap: 12,
+          alignItems: 'stretch',
+          overflowX: 'auto',
+          overflowY: 'hidden',
+          paddingBottom: 4,
+          maxWidth: '100%',
+        }}
+      >
+        {levels.map((levelItems, levelIndex) => (
+          <div
+            key={levelIndex}
+            style={{
+              display: 'grid',
+              gap: 6,
+              minWidth: 128,
+              paddingLeft: levelIndex > 0 ? 10 : 0,
+              borderLeft: levelIndex > 0 ? '2px solid #dfe7da' : 'none',
+              textAlign: 'left',
+              flex: '0 0 auto',
+            }}
+          >
+            {levelItems.map((item) => (
+              <div
+                key={item.id}
+                style={{
+                  fontSize: 12,
+                  lineHeight: 1.35,
+                  color: item.id === task.id ? '#16361f' : '#35513c',
+                  fontWeight: item.id === task.id ? 800 : 500,
+                  textAlign: 'left',
+                  overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {formatTaskName(item.name)}
+              </div>
+            ))}
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderTaskCard(task, personName, project) {
+    const summaryLines = buildTaskSummary(task, personName)
+
+    return (
+      <div
+        key={task.id}
+        style={{
+          border: '1px solid #e8eee4',
+          borderRadius: 10,
+          padding: '10px 10px 9px',
+          background: '#fbfcfa',
+          textAlign: 'left',
+          overflow: 'hidden',
+        }}
+      >
+        <div
+          style={{
+            fontSize: 12,
+            color: '#35513c',
+            lineHeight: 1.35,
+            textAlign: 'left',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+          }}
+        >
+          <strong>Envolvimento no projeto:</strong> {buildProjectInvolvementText(project)}
+        </div>
+
+        <div
+          style={{
+            marginTop: 8,
+            fontSize: 13,
+            color: '#1d2a21',
+            lineHeight: 1.35,
+            textAlign: 'left',
+            overflowWrap: 'anywhere',
+            wordBreak: 'break-word',
+          }}
+        >
+          Tarefa <strong>{formatTaskName(task.name)}</strong> {task.currentStateLabel}
+        </div>
+
+        <div style={{ marginTop: 9, textAlign: 'left' }}>
+          <div style={sectionTitleStyle}>Sequência de tarefas</div>
+          {renderSequenceLevels(task)}
+        </div>
+
+        <div style={{ marginTop: 9, textAlign: 'left' }}>
+          <div style={sectionTitleStyle}>Resumo</div>
+          <div style={{ display: 'grid', gap: 3 }}>
+            {summaryLines.map((line, index) => (
+              <div
+                key={index}
+                style={{
+                  fontSize: 12,
+                  color: '#35513c',
+                  lineHeight: 1.45,
+                  textAlign: 'left',
+                  overflowWrap: 'anywhere',
+                  wordBreak: 'break-word',
+                }}
+              >
+                {line}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ marginTop: 9, display: 'grid', gap: 3, textAlign: 'left' }}>
+          <div
+            style={{
+              fontSize: 12,
+              color: '#35513c',
+              textAlign: 'left',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+            }}
+          >
+            <strong>Bloqueios ativos:</strong>{' '}
+            {task.blockingItems.length ? formatTaskResponsibleList(task.blockingItems) : 'nenhum'}
+          </div>
+
+          <div
+            style={{
+              fontSize: 12,
+              color: '#35513c',
+              textAlign: 'left',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+            }}
+          >
+            <strong>Próxima ação sugerida:</strong> {buildNextAction(task)}
+          </div>
+        </div>
+
+        {renderRelationshipSection(
+          `O que está a bloquear ${personName}`,
+          task.predecessors,
+          'Nada neste momento.'
+        )}
+
+        {renderRelationshipSection(
+          `O que ${personName} desbloqueia`,
+          task.successors,
+          'Nada neste momento.'
+        )}
+
+        <div style={{ marginTop: 10, textAlign: 'left' }}>
+          <div style={sectionTitleStyle}>Projeto</div>
+          <div
+            style={{
+              fontSize: 12,
+              color: '#35513c',
+              lineHeight: 1.45,
+              textAlign: 'left',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+            }}
+          >
+            {project.name}, por concluir: {formatTaskResponsibleList(project.projectPendingItems)}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderPersonCard(person) {
+    return (
+      <section key={person.id} style={cardStyle}>
+        <div
+          style={{
+            display: 'flex',
+            justifyContent: 'space-between',
+            gap: 10,
+            alignItems: 'flex-start',
+            marginBottom: 10,
+          }}
+        >
+          <div
+            style={{
+              fontSize: 20,
+              lineHeight: 1.05,
+              color: '#16361f',
+              fontWeight: 700,
+              textAlign: 'left',
+              overflowWrap: 'anywhere',
+              wordBreak: 'break-word',
+              minWidth: 0,
+              flex: 1,
+            }}
+          >
+            {person.name}
+          </div>
+
+          <button
+            onClick={() => setOpenPersonIds((prev) => toggleInOrderedArray(prev, person.id))}
+            style={smallButtonStyle}
+          >
+            -
+          </button>
+        </div>
+
+        <div style={{ display: 'grid', gap: 10 }}>
+          {person.areas.length ? (
+            <div style={sectionBoxStyle}>
+              <div style={sectionTitleStyle}>Responsável por áreas</div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {person.areas.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      padding: '4px 6px',
+                      borderRadius: 6,
+                      border: '1px solid #dfe7da',
+                      background: '#ffffff',
+                      fontSize: 12,
+                      color: '#1d2a21',
+                      lineHeight: 1.3,
+                      textAlign: 'left',
+                      overflowWrap: 'anywhere',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {item.areaName}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {person.functions.length ? (
+            <div style={sectionBoxStyle}>
+              <div style={sectionTitleStyle}>Responsável por funções</div>
+              <div style={{ display: 'grid', gap: 4 }}>
+                {person.functions.map((item) => (
+                  <div
+                    key={item.id}
+                    style={{
+                      padding: '4px 6px',
+                      borderRadius: 6,
+                      border: '1px solid #dfe7da',
+                      background: '#ffffff',
+                      fontSize: 12,
+                      color: '#1d2a21',
+                      lineHeight: 1.3,
+                      textAlign: 'left',
+                      overflowWrap: 'anywhere',
+                      wordBreak: 'break-word',
+                    }}
+                  >
+                    {item.label}
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+
+          {person.projects.length ? (
+            <div style={sectionBoxStyle}>
+              <div style={sectionTitleStyle}>Projetos e tarefas em que está envolvido</div>
+
+              <div style={{ display: 'grid', gap: 9 }}>
+                {person.projects.map((project, projectIndex) => (
+                  <div
+                    key={`${person.id}-${project.id ?? projectIndex}`}
+                    style={{
+                      border: '1px solid #dfe7da',
+                      borderRadius: 8,
+                      padding: 9,
+                      background: '#ffffff',
+                      textAlign: 'left',
+                      overflow: 'hidden',
+                    }}
+                  >
+                    <div
+                      style={{
+                        fontSize: 14,
+                        fontWeight: 700,
+                        color: '#1d2a21',
+                        marginBottom: 8,
+                        textAlign: 'left',
+                        overflowWrap: 'anywhere',
+                        wordBreak: 'break-word',
+                      }}
+                    >
+                      {project.name}
+                    </div>
+
+                    <div style={{ display: 'grid', gap: 8 }}>
+                      {project.tasks.map((task) => renderTaskCard(task, person.name, project))}
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </section>
+    )
+  }
+
+  function renderHorizontalExplorer({
+    leftTitle,
+    items,
+    openItems,
+    onToggle,
+    onExpandAll,
+    onCollapseAll,
+    renderOpenCard,
+    emptyText,
+  }) {
+    return (
+      <div
+        style={{
+          display: 'grid',
+          gridTemplateColumns: '250px minmax(0, 1fr)',
+          gap: 16,
+          alignItems: 'start',
+        }}
+      >
+        <aside
+          style={{
+            position: 'sticky',
+            top: 16,
+            alignSelf: 'start',
+            background: '#f6f8f4',
+            textAlign: 'left',
+          }}
+        >
+          <div style={{ display: 'flex', gap: 8, marginBottom: 10, flexWrap: 'wrap' }}>
+            <button onClick={onExpandAll} style={smallButtonStyle}>
+              + Expandir tudo
+            </button>
+            <button onClick={onCollapseAll} style={smallButtonStyle}>
+              - Colapsar tudo
+            </button>
+          </div>
+
+          <div style={sectionBoxStyle}>
+            <div style={sectionTitleStyle}>{leftTitle}</div>
+
+            <div style={{ display: 'grid', gap: 6 }}>
+              {items.map((item) => {
+                const isOpen = openItems.some((openItem) => openItem.id === item.id)
+
+                return (
+                  <LeftRailButton
+                    key={item.id}
+                    isOpen={isOpen}
+                    onClick={() => onToggle(item.id)}
+                  >
+                    {item.name}
+                  </LeftRailButton>
+                )
+              })}
+            </div>
+          </div>
+        </aside>
+
+        <div
+          style={{
+            minWidth: 0,
+            overflowX: 'auto',
+            overflowY: 'hidden',
+            paddingBottom: 10,
+          }}
+        >
+          {openItems.length ? (
+            <div
+              style={{
+                display: 'flex',
+                gap: 14,
+                alignItems: 'flex-start',
+                minHeight: 120,
+                width: 'max-content',
+                maxWidth: 'none',
+              }}
+            >
+              {openItems.map(renderOpenCard)}
+            </div>
+          ) : (
+            <div
+              style={{
+                ...sectionBoxStyle,
+                minHeight: 120,
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                color: '#6b7a71',
+                fontSize: 13,
+                textAlign: 'left',
+              }}
+            >
+              {emptyText}
+            </div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderAreasView() {
+    return renderHorizontalExplorer({
+      leftTitle: 'Áreas',
+      items: areas.map((area) => ({ id: area.id, name: area.name })),
+      openItems: openAreas.map((area) => ({ id: area.id, renderValue: area })),
+      onToggle: (id) => setOpenAreaIds((prev) => toggleInOrderedArray(prev, id)),
+      onExpandAll: () => setOpenAreaIds(areas.map((area) => area.id)),
+      onCollapseAll: () => setOpenAreaIds([]),
+      renderOpenCard: ({ renderValue }) => renderAreaCard(renderValue),
+      emptyText: 'Escolhe uma ou mais áreas à esquerda.',
+    })
+  }
+
+  function renderPeopleView() {
+    return renderHorizontalExplorer({
+      leftTitle: 'Pessoas',
+      items: peopleViewData.map((person) => ({ id: person.id, name: person.name })),
+      openItems: openPeople.map((person) => ({ id: person.id, renderValue: person })),
+      onToggle: (id) => setOpenPersonIds((prev) => toggleInOrderedArray(prev, id)),
+      onExpandAll: () => setOpenPersonIds(peopleViewData.map((person) => person.id)),
+      onCollapseAll: () => setOpenPersonIds([]),
+      renderOpenCard: ({ renderValue }) => renderPersonCard(renderValue),
+      emptyText: 'Escolhe uma ou mais pessoas à esquerda.',
+    })
+  }
+
+  return (
+    <>
+      <style>{`
+        :root {
+          font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #1d2a21;
+          background: #f6f8f4;
+        }
+
+        html, body, #root {
+          margin: 0;
+          min-width: 100%;
+          min-height: 100%;
+          width: 100%;
+        }
+
+        body {
+          display: block;
+          background: #f6f8f4;
+          color: #1d2a21;
+        }
+
+        * {
+          box-sizing: border-box;
+        }
+
+        button {
+          font: inherit;
+        }
+      `}</style>
+
+      <div
+        style={{
+          minHeight: '100vh',
+          background: '#f6f8f4',
+          padding: '24px 18px 36px',
+        }}
+      >
+        <div
+          style={{
+            maxWidth: 1800,
+            margin: '0 auto',
+          }}
+        >
+          <header style={{ marginBottom: 18, textAlign: 'left' }}>
+            <img
+              src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.svg"
+              alt="BPHDA"
+              style={{
+                display: 'block',
+                height: 34,
+                width: 'auto',
+                marginBottom: 14,
+              }}
+            />
+
+            <h1
+              style={{
+                margin: 0,
+                fontSize: 26,
+                lineHeight: 1.05,
+                color: '#16361f',
+                textAlign: 'left',
+              }}
+            >
+              Áreas, funções e responsáveis
+            </h1>
+          </header>
+
+          <div
+            style={{
+              display: 'flex',
+              gap: 8,
+              marginBottom: 14,
+              flexWrap: 'wrap',
+            }}
+          >
+            <button
+              onClick={() => setActiveView('areas')}
+              style={{
+                ...smallButtonStyle,
+                border: activeView === 'areas' ? '1px solid #b7cda8' : smallButtonStyle.border,
+                background: activeView === 'areas' ? '#e8f2e0' : '#ffffff',
+              }}
+            >
+              Ver por áreas
+            </button>
+
+            <button
+              onClick={() => setActiveView('people')}
+              style={{
+                ...smallButtonStyle,
+                border: activeView === 'people' ? '1px solid #b7cda8' : smallButtonStyle.border,
+                background: activeView === 'people' ? '#e8f2e0' : '#ffffff',
+              }}
+            >
+              Ver por pessoa
+            </button>
+          </div>
+
+          {loading ? (
+            <div
+              style={{
+                background: '#ffffff',
+                border: '1px solid #dfe7da',
+                borderRadius: 14,
+                padding: 18,
+                color: '#4f5e56',
+                textAlign: 'left',
+              }}
+            >
+              A carregar...
+            </div>
+          ) : null}
+
+          {!loading && error ? (
+            <div
+              style={{
+                background: '#fff4f4',
+                border: '1px solid #efcaca',
+                borderRadius: 14,
+                padding: 18,
+                color: '#8a2f2f',
+                textAlign: 'left',
+              }}
+            >
+              {error}
+            </div>
+          ) : null}
+
+          {!loading && !error ? (
+            activeView === 'areas' ? renderAreasView() : renderPeopleView()
+          ) : null}
+        </div>
+      </div>
+    </>
+  )
+}

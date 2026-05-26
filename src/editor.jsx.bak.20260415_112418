@@ -1,0 +1,1325 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { supabase } from './supabaseClient'
+
+const dependencyTypeOptions = [
+  {
+    value: 'finish_to_start',
+    label: 'Só começa depois da anterior terminar',
+    help: 'A tarefa destino só pode começar quando a tarefa origem estiver concluída.',
+  },
+  {
+    value: 'start_to_start',
+    label: 'Só começa quando a anterior começar',
+    help: 'A tarefa destino só pode começar quando a tarefa origem tiver começado.',
+  },
+  {
+    value: 'finish_to_finish',
+    label: 'Só termina depois da anterior terminar',
+    help: 'A tarefa destino só pode ficar concluída depois da tarefa origem ficar concluída.',
+  },
+  {
+    value: 'blocks',
+    label: 'Bloqueia enquanto não estiver resolvida',
+    help: 'Enquanto a tarefa origem não ficar resolvida, a tarefa destino fica bloqueada.',
+  },
+  {
+    value: 'related_to',
+    label: 'Relacionada',
+    help: 'Ligação informativa, sem bloqueio automático.',
+  },
+]
+
+const workItemTypeOptions = [
+  ['project', 'Projeto'],
+  ['task', 'Tarefa'],
+  ['subtask', 'Subtarefa'],
+  ['milestone', 'Marco'],
+]
+
+const workItemStatusOptions = [
+  ['not_started', 'Não iniciada'],
+  ['in_progress', 'Em curso'],
+  ['blocked', 'Bloqueada'],
+  ['done', 'Concluída'],
+  ['cancelled', 'Cancelada'],
+]
+
+const phaseOptions = [
+  ['planning', 'Planeamento'],
+  ['execution', 'Execução'],
+  ['review', 'Revisão'],
+  ['completed', 'Concluído'],
+]
+
+const priorityOptions = [
+  ['low', 'Baixa'],
+  ['medium', 'Média'],
+  ['high', 'Alta'],
+  ['critical', 'Crítica'],
+]
+
+const areaRoleOptions = [
+  ['lead', 'Responsável'],
+  ['co_lead', 'Co-responsável'],
+  ['support', 'Apoio'],
+  ['informed', 'Informado'],
+]
+
+const genericRoleOptions = [
+  ['owner', 'Responsável'],
+  ['co_owner', 'Co-responsável'],
+  ['assignee', 'Executante'],
+  ['contributor', 'Contribui'],
+  ['approver', 'Aprova'],
+  ['reviewer', 'Revê'],
+  ['informed', 'Informado'],
+  ['watcher', 'Acompanha'],
+]
+
+const boxStyle = {
+  background: '#ffffff',
+  border: '1px solid #dfe7da',
+  borderRadius: 12,
+  padding: 14,
+}
+
+const inputStyle = {
+  width: '100%',
+  padding: '8px 10px',
+  borderRadius: 8,
+  border: '1px solid #cfd9ca',
+  fontSize: 13,
+}
+
+const buttonStyle = {
+  padding: '7px 11px',
+  borderRadius: 999,
+  border: '1px solid #cfd9ca',
+  background: '#ffffff',
+  cursor: 'pointer',
+  fontSize: 12,
+  lineHeight: 1.15,
+}
+
+const primaryButtonStyle = {
+  ...buttonStyle,
+  background: '#e8f2e0',
+  border: '1px solid #b7cda8',
+}
+
+const dangerButtonStyle = {
+  ...buttonStyle,
+  background: '#fff4f4',
+  border: '1px solid #efcaca',
+  color: '#8a2f2f',
+}
+
+function orderSwap(items, currentId, direction) {
+  const index = items.findIndex((item) => item.id === currentId)
+  if (index === -1) return null
+  const targetIndex = direction === 'up' ? index - 1 : index + 1
+  if (targetIndex < 0 || targetIndex >= items.length) return null
+  return [items[index], items[targetIndex]]
+}
+
+function EditorApp() {
+  function findProject(workItem, workItemMap) {
+  let current = workItem
+  const visited = new Set()
+
+  while (current) {
+    if (visited.has(current.id)) return null
+    visited.add(current.id)
+
+    if (current.type === 'project') return current
+    if (!current.parent_work_item_id) return null
+
+    current = workItemMap.get(current.parent_work_item_id)
+  }
+
+  return null
+}
+  const [tab, setTab] = useState('people')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  const [people, setPeople] = useState([])
+  const [areas, setAreas] = useState([])
+  const [functions, setFunctions] = useState([])
+  const [workItems, setWorkItems] = useState([])
+  const [dependencies, setDependencies] = useState([])
+  const [areaPeople, setAreaPeople] = useState([])
+  const [functionPeople, setFunctionPeople] = useState([])
+  const [workItemPeople, setWorkItemPeople] = useState([])
+
+  const [selectedPersonId, setSelectedPersonId] = useState('')
+  const [selectedAreaId, setSelectedAreaId] = useState('')
+  const [selectedFunctionId, setSelectedFunctionId] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState('')
+  const [selectedDependencyId, setSelectedDependencyId] = useState('')
+  const [selectedAreaAssignmentId, setSelectedAreaAssignmentId] = useState('')
+  const [selectedFunctionAssignmentId, setSelectedFunctionAssignmentId] = useState('')
+  const [selectedWorkItemAssignmentId, setSelectedWorkItemAssignmentId] = useState('')
+
+  const [personForm, setPersonForm] = useState(null)
+  const [areaForm, setAreaForm] = useState(null)
+  const [functionForm, setFunctionForm] = useState(null)
+  const [workItemForm, setWorkItemForm] = useState(null)
+  const [dependencyForm, setDependencyForm] = useState(null)
+  const [areaAssignmentForm, setAreaAssignmentForm] = useState(null)
+  const [functionAssignmentForm, setFunctionAssignmentForm] = useState(null)
+  const [workItemAssignmentForm, setWorkItemAssignmentForm] = useState(null)
+
+  const [dirty, setDirty] = useState({
+    person: false,
+    area: false,
+    function: false,
+    workItem: false,
+    dependency: false,
+    areaAssignment: false,
+    functionAssignment: false,
+    workItemAssignment: false,
+  })
+
+  const [openFunctionAreaIds, setOpenFunctionAreaIds] = useState([])
+  const [dependencySourceProjectId, setDependencySourceProjectId] = useState('')
+  const [dependencyTargetProjectId, setDependencyTargetProjectId] = useState('')
+
+  useEffect(() => {
+    loadAll()
+  }, [])
+
+  async function loadAll() {
+    setLoading(true)
+    setError('')
+
+    const [
+      peopleRes,
+      areasRes,
+      functionsRes,
+      workItemsRes,
+      dependenciesRes,
+      areaPeopleRes,
+      functionPeopleRes,
+      workItemPeopleRes,
+    ] = await Promise.all([
+      supabase.from('people').select('*').order('name', { ascending: true }),
+      supabase.from('areas').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('functions').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('work_items').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('work_item_dependencies').select('*'),
+      supabase.from('area_people').select('*'),
+      supabase.from('function_people').select('*'),
+      supabase.from('work_item_people').select('*'),
+    ])
+
+    const all = [peopleRes, areasRes, functionsRes, workItemsRes, dependenciesRes, areaPeopleRes, functionPeopleRes, workItemPeopleRes]
+    const firstError = all.find((r) => r.error)
+
+    if (firstError?.error) {
+      setError(firstError.error.message)
+      setLoading(false)
+      return
+    }
+
+    setPeople(peopleRes.data ?? [])
+    setAreas(areasRes.data ?? [])
+    setFunctions(functionsRes.data ?? [])
+    setWorkItems(workItemsRes.data ?? [])
+    setDependencies(dependenciesRes.data ?? [])
+    setAreaPeople(areaPeopleRes.data ?? [])
+    setFunctionPeople(functionPeopleRes.data ?? [])
+    setWorkItemPeople(workItemPeopleRes.data ?? [])
+    setLoading(false)
+  }
+
+  function clearMessages() {
+    setError('')
+    setMessage('')
+  }
+
+  function functionLabel(fn) {
+    const area = areas.find((a) => a.id === fn.area_id)
+    return `${area?.name ?? 'Sem área'}: ${fn.name}`
+  }
+
+  function workItemLabel(item) {
+    const typeLabel = Object.fromEntries(workItemTypeOptions)[item.type] ?? item.type
+    return `${typeLabel}: ${item.name}`
+  }
+
+  const projects = useMemo(
+    () => workItems.filter((item) => item.type === 'project').sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt')),
+    [workItems]
+  )
+
+  const selectedProject = useMemo(
+    () => workItems.find((item) => item.id === selectedProjectId) ?? null,
+    [workItems, selectedProjectId]
+  )
+
+  const projectTasks = useMemo(() => {
+    if (!selectedProjectId) return []
+    const map = new Map(workItems.map((item) => [item.id, item]))
+    const results = []
+
+    function walk(parentId, depth) {
+      const children = workItems
+        .filter((item) => item.parent_work_item_id === parentId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+
+      for (const child of children) {
+        results.push({ ...child, depth })
+        walk(child.id, depth + 1)
+      }
+    }
+
+    walk(selectedProjectId, 0)
+    return results
+  }, [workItems, selectedProjectId])
+
+  const selectedTaskOrProject = useMemo(
+    () => workItems.find((item) => item.id === selectedWorkItemId) ?? null,
+    [workItems, selectedWorkItemId]
+  )
+
+  const filteredDependencySourceItems = useMemo(() => {
+    if (!dependencySourceProjectId) return []
+    const out = []
+    function walk(parentId) {
+      const children = workItems
+        .filter((item) => item.id === parentId || item.parent_work_item_id === parentId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+
+      for (const child of children) {
+        if (!out.some((x) => x.id === child.id)) out.push(child)
+        if (child.type !== 'project') walk(child.id)
+      }
+    }
+    walk(dependencySourceProjectId)
+    return out.filter((item) => item.id !== dependencySourceProjectId || item.type === 'project')
+  }, [dependencySourceProjectId, workItems])
+
+  const filteredDependencyTargetItems = useMemo(() => {
+    if (!dependencyTargetProjectId) return []
+    const out = []
+    function walk(parentId) {
+      const children = workItems
+        .filter((item) => item.id === parentId || item.parent_work_item_id === parentId)
+        .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+
+      for (const child of children) {
+        if (!out.some((x) => x.id === child.id)) out.push(child)
+        if (child.type !== 'project') walk(child.id)
+      }
+    }
+    walk(dependencyTargetProjectId)
+    return out.filter((item) => item.id !== dependencyTargetProjectId || item.type === 'project')
+  }, [dependencyTargetProjectId, workItems])
+
+  const filteredDependencies = useMemo(() => {
+    return dependencies.filter((dep) => {
+      const pred = workItems.find((item) => item.id === dep.predecessor_work_item_id)
+      const succ = workItems.find((item) => item.id === dep.successor_work_item_id)
+      const predProject = pred ? findProject(pred, new Map(workItems.map((item) => [item.id, item]))) : null
+      const succProject = succ ? findProject(succ, new Map(workItems.map((item) => [item.id, item]))) : null
+
+      const sourceOk = dependencySourceProjectId ? predProject?.id === dependencySourceProjectId : true
+      const targetOk = dependencyTargetProjectId ? succProject?.id === dependencyTargetProjectId : true
+      return sourceOk && targetOk
+    })
+  }, [dependencies, dependencySourceProjectId, dependencyTargetProjectId, workItems])
+
+  const selectedPerson = useMemo(() => people.find((row) => row.id === selectedPersonId) ?? null, [people, selectedPersonId])
+  const selectedArea = useMemo(() => areas.find((row) => row.id === selectedAreaId) ?? null, [areas, selectedAreaId])
+  const selectedFunction = useMemo(() => functions.find((row) => row.id === selectedFunctionId) ?? null, [functions, selectedFunctionId])
+  const selectedDependency = useMemo(() => dependencies.find((row) => row.id === selectedDependencyId) ?? null, [dependencies, selectedDependencyId])
+  const selectedAreaAssignment = useMemo(() => areaPeople.find((row) => row.id === selectedAreaAssignmentId) ?? null, [areaPeople, selectedAreaAssignmentId])
+  const selectedFunctionAssignment = useMemo(() => functionPeople.find((row) => row.id === selectedFunctionAssignmentId) ?? null, [functionPeople, selectedFunctionAssignmentId])
+  const selectedWorkItemAssignment = useMemo(() => workItemPeople.find((row) => row.id === selectedWorkItemAssignmentId) ?? null, [workItemPeople, selectedWorkItemAssignmentId])
+
+  useEffect(() => {
+    if (!selectedPerson) {
+      setPersonForm(null)
+      return
+    }
+    setPersonForm({
+      id: selectedPerson.id,
+      name: selectedPerson.name ?? '',
+      email: selectedPerson.email ?? '',
+      role_title: selectedPerson.role_title ?? '',
+      status: selectedPerson.status ?? 'active',
+    })
+    setDirty((d) => ({ ...d, person: false }))
+  }, [selectedPersonId, selectedPerson])
+
+  useEffect(() => {
+    if (!selectedArea) {
+      setAreaForm(null)
+      return
+    }
+    setAreaForm({
+      id: selectedArea.id,
+      name: selectedArea.name ?? '',
+      description: selectedArea.description ?? '',
+      sort_order: selectedArea.sort_order ?? 0,
+      status: selectedArea.status ?? 'active',
+    })
+    setDirty((d) => ({ ...d, area: false }))
+  }, [selectedAreaId, selectedArea])
+
+  useEffect(() => {
+    if (!selectedFunction) {
+      setFunctionForm(null)
+      return
+    }
+    setFunctionForm({
+      id: selectedFunction.id,
+      area_id: selectedFunction.area_id ?? '',
+      parent_function_id: selectedFunction.parent_function_id ?? '',
+      name: selectedFunction.name ?? '',
+      sort_order: selectedFunction.sort_order ?? 0,
+      status: selectedFunction.status ?? 'active',
+    })
+    setDirty((d) => ({ ...d, function: false }))
+  }, [selectedFunctionId, selectedFunction])
+
+  useEffect(() => {
+    if (!selectedTaskOrProject) {
+      setWorkItemForm(null)
+      return
+    }
+    setWorkItemForm({
+      id: selectedTaskOrProject.id,
+      parent_work_item_id: selectedTaskOrProject.parent_work_item_id ?? '',
+      type: selectedTaskOrProject.type ?? 'project',
+      name: selectedTaskOrProject.name ?? '',
+      status: selectedTaskOrProject.status ?? 'not_started',
+      phase: selectedTaskOrProject.phase ?? 'planning',
+      priority: selectedTaskOrProject.priority ?? 'medium',
+      sort_order: selectedTaskOrProject.sort_order ?? 0,
+    })
+    setDirty((d) => ({ ...d, workItem: false }))
+  }, [selectedWorkItemId, selectedTaskOrProject])
+
+  useEffect(() => {
+    if (!selectedDependency) {
+      setDependencyForm(null)
+      return
+    }
+    setDependencyForm({
+      id: selectedDependency.id,
+      predecessor_work_item_id: selectedDependency.predecessor_work_item_id ?? '',
+      successor_work_item_id: selectedDependency.successor_work_item_id ?? '',
+      dependency_type: selectedDependency.dependency_type ?? 'finish_to_start',
+      lag_days: selectedDependency.lag_days ?? 0,
+      note: selectedDependency.note ?? '',
+    })
+    setDirty((d) => ({ ...d, dependency: false }))
+  }, [selectedDependencyId, selectedDependency])
+
+  useEffect(() => {
+    if (!selectedAreaAssignment) {
+      setAreaAssignmentForm(null)
+      return
+    }
+    setAreaAssignmentForm({
+      id: selectedAreaAssignment.id,
+      area_id: selectedAreaAssignment.area_id ?? '',
+      person_id: selectedAreaAssignment.person_id ?? '',
+      assignment_role: selectedAreaAssignment.assignment_role ?? 'lead',
+      is_primary: !!selectedAreaAssignment.is_primary,
+    })
+    setDirty((d) => ({ ...d, areaAssignment: false }))
+  }, [selectedAreaAssignmentId, selectedAreaAssignment])
+
+  useEffect(() => {
+    if (!selectedFunctionAssignment) {
+      setFunctionAssignmentForm(null)
+      return
+    }
+    setFunctionAssignmentForm({
+      id: selectedFunctionAssignment.id,
+      function_id: selectedFunctionAssignment.function_id ?? '',
+      person_id: selectedFunctionAssignment.person_id ?? '',
+      assignment_role: selectedFunctionAssignment.assignment_role ?? 'owner',
+      is_primary: !!selectedFunctionAssignment.is_primary,
+    })
+    setDirty((d) => ({ ...d, functionAssignment: false }))
+  }, [selectedFunctionAssignmentId, selectedFunctionAssignment])
+
+  useEffect(() => {
+    if (!selectedWorkItemAssignment) {
+      setWorkItemAssignmentForm(null)
+      return
+    }
+    setWorkItemAssignmentForm({
+      id: selectedWorkItemAssignment.id,
+      work_item_id: selectedWorkItemAssignment.work_item_id ?? '',
+      person_id: selectedWorkItemAssignment.person_id ?? '',
+      assignment_role: selectedWorkItemAssignment.assignment_role ?? 'owner',
+      is_primary: !!selectedWorkItemAssignment.is_primary,
+    })
+    setDirty((d) => ({ ...d, workItemAssignment: false }))
+  }, [selectedWorkItemAssignmentId, selectedWorkItemAssignment])
+
+  async function updateRow(table, id, payload) {
+    setSaving(true)
+    clearMessages()
+    const res = await supabase.from(table).update(payload).eq('id', id)
+    setSaving(false)
+    if (res.error) {
+      setError(res.error.message)
+      return false
+    }
+    setMessage('Guardado automaticamente.')
+    await loadAll()
+    return true
+  }
+
+  async function insertRow(table, payload) {
+    setSaving(true)
+    clearMessages()
+    const res = await supabase.from(table).insert(payload).select().single()
+    setSaving(false)
+    if (res.error) {
+      setError(res.error.message)
+      return null
+    }
+    setMessage('Criado com sucesso.')
+    await loadAll()
+    return res.data
+  }
+
+  async function removeRow(table, id) {
+    const ok = window.confirm('Tens a certeza que queres apagar este registo?')
+    if (!ok) return
+
+    setSaving(true)
+    clearMessages()
+    const res = await supabase.from(table).delete().eq('id', id)
+    setSaving(false)
+
+    if (res.error) {
+      setError(res.error.message)
+      return
+    }
+
+    setMessage('Apagado com sucesso.')
+    await loadAll()
+  }
+
+  useEffect(() => {
+    if (!personForm?.id || !dirty.person) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, person: false }))
+      await updateRow('people', personForm.id, {
+        name: personForm.name,
+        email: personForm.email || null,
+        role_title: personForm.role_title || null,
+        status: personForm.status,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [personForm, dirty.person])
+
+  useEffect(() => {
+    if (!areaForm?.id || !dirty.area) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, area: false }))
+      await updateRow('areas', areaForm.id, {
+        name: areaForm.name,
+        description: areaForm.description || null,
+        sort_order: Number(areaForm.sort_order) || 0,
+        status: areaForm.status,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [areaForm, dirty.area])
+
+  useEffect(() => {
+    if (!functionForm?.id || !dirty.function) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, function: false }))
+      await updateRow('functions', functionForm.id, {
+        area_id: functionForm.area_id || null,
+        parent_function_id: functionForm.parent_function_id || null,
+        name: functionForm.name,
+        sort_order: Number(functionForm.sort_order) || 0,
+        status: functionForm.status,
+        level: functionForm.parent_function_id ? 2 : 1,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [functionForm, dirty.function])
+
+  useEffect(() => {
+    if (!workItemForm?.id || !dirty.workItem) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, workItem: false }))
+      await updateRow('work_items', workItemForm.id, {
+        parent_work_item_id: workItemForm.parent_work_item_id || null,
+        type: workItemForm.type,
+        name: workItemForm.name,
+        status: workItemForm.status,
+        phase: workItemForm.phase,
+        priority: workItemForm.priority,
+        sort_order: Number(workItemForm.sort_order) || 0,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [workItemForm, dirty.workItem])
+
+  useEffect(() => {
+    if (!dependencyForm?.id || !dirty.dependency) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, dependency: false }))
+      await updateRow('work_item_dependencies', dependencyForm.id, {
+        predecessor_work_item_id: dependencyForm.predecessor_work_item_id,
+        successor_work_item_id: dependencyForm.successor_work_item_id,
+        dependency_type: dependencyForm.dependency_type,
+        lag_days: Number(dependencyForm.lag_days) || 0,
+        note: dependencyForm.note || null,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [dependencyForm, dirty.dependency])
+
+  useEffect(() => {
+    if (!areaAssignmentForm?.id || !dirty.areaAssignment) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, areaAssignment: false }))
+      await updateRow('area_people', areaAssignmentForm.id, {
+        area_id: areaAssignmentForm.area_id,
+        person_id: areaAssignmentForm.person_id,
+        assignment_role: areaAssignmentForm.assignment_role,
+        is_primary: areaAssignmentForm.is_primary,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [areaAssignmentForm, dirty.areaAssignment])
+
+  useEffect(() => {
+    if (!functionAssignmentForm?.id || !dirty.functionAssignment) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, functionAssignment: false }))
+      await updateRow('function_people', functionAssignmentForm.id, {
+        function_id: functionAssignmentForm.function_id,
+        person_id: functionAssignmentForm.person_id,
+        assignment_role: functionAssignmentForm.assignment_role,
+        is_primary: functionAssignmentForm.is_primary,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [functionAssignmentForm, dirty.functionAssignment])
+
+  useEffect(() => {
+    if (!workItemAssignmentForm?.id || !dirty.workItemAssignment) return
+    const t = setTimeout(async () => {
+      setDirty((d) => ({ ...d, workItemAssignment: false }))
+      await updateRow('work_item_people', workItemAssignmentForm.id, {
+        work_item_id: workItemAssignmentForm.work_item_id,
+        person_id: workItemAssignmentForm.person_id,
+        assignment_role: workItemAssignmentForm.assignment_role,
+        is_primary: workItemAssignmentForm.is_primary,
+      })
+    }, 700)
+    return () => clearTimeout(t)
+  }, [workItemAssignmentForm, dirty.workItemAssignment])
+
+  async function createNewPerson() {
+    const row = await insertRow('people', { name: 'Nova pessoa', status: 'active' })
+    if (row?.id) setSelectedPersonId(row.id)
+  }
+
+  async function createNewArea() {
+    const nextOrder = (areas.at(-1)?.sort_order ?? -1) + 10
+    const row = await insertRow('areas', { name: 'Nova área', sort_order: nextOrder, status: 'active' })
+    if (row?.id) setSelectedAreaId(row.id)
+  }
+
+  async function createNewFunction(areaId) {
+    const siblings = functions.filter((fn) => fn.area_id === areaId && !fn.parent_function_id)
+    const nextOrder = (siblings.at(-1)?.sort_order ?? -1) + 10
+    const row = await insertRow('functions', {
+      area_id: areaId,
+      name: 'Nova função',
+      sort_order: nextOrder,
+      status: 'active',
+      level: 1,
+    })
+    if (row?.id) {
+      setSelectedFunctionId(row.id)
+      if (!openFunctionAreaIds.includes(areaId)) setOpenFunctionAreaIds((prev) => [...prev, areaId])
+    }
+  }
+
+  async function createNewProject() {
+    const nextOrder = (projects.at(-1)?.sort_order ?? -1) + 10
+    const row = await insertRow('work_items', {
+      type: 'project',
+      name: 'Novo projeto',
+      status: 'not_started',
+      phase: 'planning',
+      priority: 'medium',
+      sort_order: nextOrder,
+    })
+    if (row?.id) {
+      setSelectedProjectId(row.id)
+      setSelectedWorkItemId(row.id)
+    }
+  }
+
+  async function createTaskUnder(parent) {
+    const siblings = workItems.filter((item) => item.parent_work_item_id === parent.id)
+    const nextOrder = (siblings.at(-1)?.sort_order ?? -1) + 10
+    const row = await insertRow('work_items', {
+      parent_work_item_id: parent.id,
+      type: parent.type === 'project' ? 'task' : 'subtask',
+      name: parent.type === 'project' ? 'Nova tarefa' : 'Nova subtarefa',
+      status: 'not_started',
+      phase: 'planning',
+      priority: 'medium',
+      sort_order: nextOrder,
+    })
+    if (row?.id) setSelectedWorkItemId(row.id)
+  }
+
+  async function createAreaAssignment() {
+    if (!areas.length || !people.length) return
+    const row = await insertRow('area_people', {
+      area_id: selectedAreaId || areas[0].id,
+      person_id: people[0].id,
+      assignment_role: 'lead',
+      is_primary: true,
+    })
+    if (row?.id) setSelectedAreaAssignmentId(row.id)
+  }
+
+  async function createFunctionAssignment() {
+    if (!functions.length || !people.length) return
+    const row = await insertRow('function_people', {
+      function_id: selectedFunctionId || functions[0].id,
+      person_id: people[0].id,
+      assignment_role: 'owner',
+      is_primary: true,
+    })
+    if (row?.id) setSelectedFunctionAssignmentId(row.id)
+  }
+
+  async function createWorkItemAssignment(targetId) {
+    if (!targetId || !people.length) return
+    const row = await insertRow('work_item_people', {
+      work_item_id: targetId,
+      person_id: people[0].id,
+      assignment_role: 'owner',
+      is_primary: true,
+    })
+    if (row?.id) setSelectedWorkItemAssignmentId(row.id)
+  }
+
+  async function createDependency() {
+    const source = filteredDependencySourceItems.find((item) => item.type !== 'project')
+    const target = filteredDependencyTargetItems.find((item) => item.type !== 'project' && item.id !== source?.id)
+    if (!source || !target) {
+      setError('Escolhe primeiro os projetos de origem e destino com tarefas disponíveis.')
+      return
+    }
+
+    const row = await insertRow('work_item_dependencies', {
+      predecessor_work_item_id: source.id,
+      successor_work_item_id: target.id,
+      dependency_type: 'finish_to_start',
+      lag_days: 0,
+      note: dependencyTypeOptions[0].help,
+    })
+    if (row?.id) setSelectedDependencyId(row.id)
+  }
+
+  async function moveArea(areaId, direction) {
+    const sorted = areas.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+    const pair = orderSwap(sorted, areaId, direction)
+    if (!pair) return
+    const [current, target] = pair
+    await updateRow('areas', current.id, { sort_order: target.sort_order ?? 0 })
+    await updateRow('areas', target.id, { sort_order: current.sort_order ?? 0 })
+  }
+
+  async function moveFunction(functionId, direction) {
+    const selected = functions.find((fn) => fn.id === functionId)
+    if (!selected) return
+    const siblings = functions
+      .filter((fn) => fn.area_id === selected.area_id && (fn.parent_function_id ?? '') === (selected.parent_function_id ?? ''))
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+    const pair = orderSwap(siblings, functionId, direction)
+    if (!pair) return
+    const [current, target] = pair
+    await updateRow('functions', current.id, { sort_order: target.sort_order ?? 0 })
+    await updateRow('functions', target.id, { sort_order: current.sort_order ?? 0 })
+  }
+
+  async function moveWorkItem(itemId, direction) {
+    const selected = workItems.find((item) => item.id === itemId)
+    if (!selected) return
+    const siblings = workItems
+      .filter((item) => (item.parent_work_item_id ?? '') === (selected.parent_work_item_id ?? ''))
+      .sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+    const pair = orderSwap(siblings, itemId, direction)
+    if (!pair) return
+    const [current, target] = pair
+    await updateRow('work_items', current.id, { sort_order: target.sort_order ?? 0 })
+    await updateRow('work_items', target.id, { sort_order: current.sort_order ?? 0 })
+  }
+
+  function toggleOpenFunctionArea(areaId) {
+    setOpenFunctionAreaIds((prev) => toggleInOrderedArray(prev, areaId))
+  }
+
+  function renderHeader() {
+    return (
+      <header style={{ marginBottom: 18 }}>
+        <img
+          src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.svg"
+          alt="BPHDA"
+          style={{ display: 'block', height: 34, width: 'auto', marginBottom: 14 }}
+        />
+        <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.05, color: '#16361f' }}>Editor de dados</h1>
+        <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <a href="/" style={{ ...buttonStyle, textDecoration: 'none', display: 'inline-block' }}>
+            Voltar à vista principal
+          </a>
+          <button onClick={loadAll} style={buttonStyle}>Recarregar dados</button>
+        </div>
+      </header>
+    )
+  }
+
+  function renderStatusBoxes() {
+    return (
+      <>
+        {error ? (
+          <div style={{ ...boxStyle, background: '#fff4f4', borderColor: '#efcaca', color: '#8a2f2f', marginBottom: 12 }}>
+            {error}
+          </div>
+        ) : null}
+
+        {message ? (
+          <div style={{ ...boxStyle, background: '#eef6e8', borderColor: '#cfe0c4', color: '#35513c', marginBottom: 12 }}>
+            {message}
+          </div>
+        ) : null}
+      </>
+    )
+  }
+
+  function renderTabs() {
+    const tabs = [
+      ['people', 'Pessoas'],
+      ['areas', 'Áreas'],
+      ['functions', 'Funções'],
+      ['projects', 'Projetos e tarefas'],
+      ['dependencies', 'Dependências'],
+      ['assignments', 'Atribuições'],
+    ]
+
+    return (
+      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+        {tabs.map(([key, label]) => (
+          <button key={key} onClick={() => setTab(key)} style={tab === key ? primaryButtonStyle : buttonStyle}>
+            {label}
+          </button>
+        ))}
+      </div>
+    )
+  }
+
+  function renderPeopleTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '300px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Pessoas</strong>
+            <button onClick={createNewPerson} style={primaryButtonStyle}>+ Criar</button>
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {people.map((row) => (
+              <button key={row.id} style={selectedPersonId === row.id ? primaryButtonStyle : buttonStyle} onClick={() => setSelectedPersonId(row.id)}>
+                {row.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          {personForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Nome<input style={inputStyle} value={personForm.name} onChange={(e) => { setPersonForm((s) => ({ ...s, name: e.target.value })); setDirty((d) => ({ ...d, person: true })) }} /></label>
+              <label>Email<input style={inputStyle} value={personForm.email} onChange={(e) => { setPersonForm((s) => ({ ...s, email: e.target.value })); setDirty((d) => ({ ...d, person: true })) }} /></label>
+              <label>Cargo / título<input style={inputStyle} value={personForm.role_title} onChange={(e) => { setPersonForm((s) => ({ ...s, role_title: e.target.value })); setDirty((d) => ({ ...d, person: true })) }} /></label>
+              <label>Estado<select style={inputStyle} value={personForm.status} onChange={(e) => { setPersonForm((s) => ({ ...s, status: e.target.value })); setDirty((d) => ({ ...d, person: true })) }}><option value="active">active</option><option value="inactive">inactive</option></select></label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={dangerButtonStyle} onClick={() => removeRow('people', personForm.id)}>Apagar</button>
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe uma pessoa à esquerda.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderAreasTab() {
+    const sortedAreas = areas.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Áreas</strong>
+            <button onClick={createNewArea} style={primaryButtonStyle}>+ Criar</button>
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {sortedAreas.map((row) => (
+              <div key={row.id} style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...(selectedAreaId === row.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }} onClick={() => setSelectedAreaId(row.id)}>
+                  {row.name}
+                </button>
+                <button style={buttonStyle} onClick={() => moveArea(row.id, 'up')}>↑</button>
+                <button style={buttonStyle} onClick={() => moveArea(row.id, 'down')}>↓</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          {areaForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Nome<input style={inputStyle} value={areaForm.name} onChange={(e) => { setAreaForm((s) => ({ ...s, name: e.target.value })) }} /></label>
+              <label>Descrição<textarea style={{ ...inputStyle, minHeight: 100 }} value={areaForm.description} onChange={(e) => { setAreaForm((s) => ({ ...s, description: e.target.value })) }} /></label>
+              <label>Estado<select style={inputStyle} value={areaForm.status} onChange={(e) => { setAreaForm((s) => ({ ...s, status: e.target.value })) }}><option value="active">active</option><option value="inactive">inactive</option><option value="archived">archived</option></select></label>
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={dangerButtonStyle} onClick={() => removeRow('areas', areaForm.id)}>Apagar</button>
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe uma área à esquerda.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderFunctionsTab() {
+    const groupedAreas = areas.slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt'))
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          {groupedAreas.map((area) => {
+            const isOpen = openFunctionAreaIds.includes(area.id)
+            const roots = (functionsByArea[area.id] ?? []).filter((fn) => !fn.parent_function_id)
+
+            return (
+              <div key={area.id} style={boxStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                  <button onClick={() => toggleOpenFunctionArea(area.id)} style={{ ...buttonStyle, flex: 1, textAlign: 'left' }}>
+                    {isOpen ? '−' : '+'} {area.name}
+                  </button>
+                  <button onClick={() => createNewFunction(area.id)} style={primaryButtonStyle}>+ Criar</button>
+                </div>
+
+                {isOpen ? (
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {roots.map((fn) => {
+                      const children = (functionsByArea[area.id] ?? []).filter((child) => child.parent_function_id === fn.id)
+
+                      return (
+                        <div key={fn.id} style={{ border: '1px solid #e3eadf', borderRadius: 8, padding: 8 }}>
+                          <div style={{ display: 'flex', gap: 6, alignItems: 'flex-start' }}>
+                            <button style={{ ...(selectedFunctionId === fn.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }} onClick={() => setSelectedFunctionId(fn.id)}>
+                              {fn.name}
+                            </button>
+                            <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'up')}>↑</button>
+                            <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'down')}>↓</button>
+                          </div>
+                          {children.length ? (
+                            <div style={{ marginTop: 6, paddingLeft: 12, display: 'grid', gap: 5 }}>
+                              {children.map((child) => (
+                                <div key={child.id} style={{ display: 'flex', gap: 6 }}>
+                                  <button style={{ ...(selectedFunctionId === child.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }} onClick={() => setSelectedFunctionId(child.id)}>
+                                    {child.name}
+                                  </button>
+                                  <button style={buttonStyle} onClick={() => moveFunction(child.id, 'up')}>↑</button>
+                                  <button style={buttonStyle} onClick={() => moveFunction(child.id, 'down')}>↓</button>
+                                </div>
+                              ))}
+                            </div>
+                          ) : null}
+                        </div>
+                      )
+                    })}
+                  </div>
+                ) : null}
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={boxStyle}>
+          {functionForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Área<select style={inputStyle} value={functionForm.area_id} onChange={(e) => { setFunctionForm((s) => ({ ...s, area_id: e.target.value })); setDirty((d) => ({ ...d, function: true })) }}>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
+              <label>Função mãe<select style={inputStyle} value={functionForm.parent_function_id} onChange={(e) => { setFunctionForm((s) => ({ ...s, parent_function_id: e.target.value })); setDirty((d) => ({ ...d, function: true })) }}><option value="">Nenhuma</option>{functions.filter((fn) => fn.area_id === functionForm.area_id && fn.id !== functionForm.id).map((fn) => <option key={fn.id} value={fn.id}>{fn.name}</option>)}</select></label>
+              <label>Nome<input style={inputStyle} value={functionForm.name} onChange={(e) => { setFunctionForm((s) => ({ ...s, name: e.target.value })); setDirty((d) => ({ ...d, function: true })) }} /></label>
+              <label>Estado<select style={inputStyle} value={functionForm.status} onChange={(e) => { setFunctionForm((s) => ({ ...s, status: e.target.value })); setDirty((d) => ({ ...d, function: true })) }}><option value="active">active</option><option value="inactive">inactive</option><option value="archived">archived</option></select></label>
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button style={primaryButtonStyle} onClick={() => createFunctionAssignment()}>+ Atribuir responsável</button>
+                <button style={dangerButtonStyle} onClick={() => removeRow('functions', functionForm.id)}>Apagar</button>
+              </div>
+
+              <div style={{ ...sectionBoxStyle, marginTop: 4 }}>
+                <div style={{ ...sectionTitleStyle, marginBottom: 6 }}>Responsáveis desta função</div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {functionPeople.filter((row) => row.function_id === functionForm.id).map((row) => {
+                    const person = people.find((p) => p.id === row.person_id)
+                    return (
+                      <div key={row.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                        <div style={{ fontSize: 13 }}>{person?.name ?? row.person_id} · {row.assignment_role}</div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button style={buttonStyle} onClick={() => setSelectedFunctionAssignmentId(row.id)}>Editar</button>
+                          <button style={dangerButtonStyle} onClick={() => removeRow('function_people', row.id)}>Apagar</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe uma função à esquerda.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderProjectsTab() {
+    const selectedAssignments = selectedWorkItemId ? workItemPeople.filter((row) => row.work_item_id === selectedWorkItemId) : []
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 360px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Projetos</strong>
+            <button onClick={createNewProject} style={primaryButtonStyle}>+ Criar projeto</button>
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {projects.map((project) => (
+              <div key={project.id} style={{ display: 'flex', gap: 6 }}>
+                <button style={{ ...(selectedProjectId === project.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }} onClick={() => { setSelectedProjectId(project.id); setSelectedWorkItemId(project.id) }}>
+                  {project.name}
+                </button>
+                <button style={buttonStyle} onClick={() => moveWorkItem(project.id, 'up')}>↑</button>
+                <button style={buttonStyle} onClick={() => moveWorkItem(project.id, 'down')}>↓</button>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Tarefas do projeto</strong>
+            {selectedProject ? <button onClick={() => createTaskUnder(selectedProject)} style={primaryButtonStyle}>+ Criar tarefa</button> : null}
+          </div>
+
+          {selectedProject ? (
+            <div style={{ display: 'grid', gap: 6 }}>
+              <button style={{ ...(selectedWorkItemId === selectedProject.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }} onClick={() => setSelectedWorkItemId(selectedProject.id)}>
+                Projeto: {selectedProject.name}
+              </button>
+              {projectTasks.map((task) => (
+                <div key={task.id} style={{ display: 'flex', gap: 6, marginLeft: task.depth * 16 }}>
+                  <button style={{ ...(selectedWorkItemId === task.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }} onClick={() => setSelectedWorkItemId(task.id)}>
+                    {task.type}: {task.name}
+                  </button>
+                  <button style={buttonStyle} onClick={() => createTaskUnder(task)}>+</button>
+                  <button style={buttonStyle} onClick={() => moveWorkItem(task.id, 'up')}>↑</button>
+                  <button style={buttonStyle} onClick={() => moveWorkItem(task.id, 'down')}>↓</button>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div>Escolhe um projeto à esquerda.</div>
+          )}
+        </div>
+
+        <div style={boxStyle}>
+          {workItemForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Tipo<select style={inputStyle} value={workItemForm.type} onChange={(e) => { setWorkItemForm((s) => ({ ...s, type: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }}>{workItemTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Item pai<select style={inputStyle} value={workItemForm.parent_work_item_id} onChange={(e) => { setWorkItemForm((s) => ({ ...s, parent_work_item_id: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }}><option value="">Nenhum</option>{workItems.filter((item) => item.type === 'project' || item.id !== workItemForm.id).map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+              <label>Nome<input style={inputStyle} value={workItemForm.name} onChange={(e) => { setWorkItemForm((s) => ({ ...s, name: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }} /></label>
+              <label>Estado<select style={inputStyle} value={workItemForm.status} onChange={(e) => { setWorkItemForm((s) => ({ ...s, status: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }}>{workItemStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Fase<select style={inputStyle} value={workItemForm.phase} onChange={(e) => { setWorkItemForm((s) => ({ ...s, phase: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }}>{phaseOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Prioridade<select style={inputStyle} value={workItemForm.priority} onChange={(e) => { setWorkItemForm((s) => ({ ...s, priority: e.target.value })); setDirty((d) => ({ ...d, workItem: true })) }}>{priorityOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button style={primaryButtonStyle} onClick={() => createWorkItemAssignment(workItemForm.id)}>+ Atribuir responsável</button>
+                <button style={dangerButtonStyle} onClick={() => removeRow('work_items', workItemForm.id)}>Apagar</button>
+              </div>
+
+              <div style={sectionBoxStyle}>
+                <div style={sectionTitleStyle}>Responsáveis deste item</div>
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {selectedAssignments.map((row) => {
+                    const person = people.find((p) => p.id === row.person_id)
+                    return (
+                      <div key={row.id} style={{ display: 'flex', justifyContent: 'space-between', gap: 8, alignItems: 'center' }}>
+                        <div style={{ fontSize: 13 }}>{person?.name ?? row.person_id} · {row.assignment_role}</div>
+                        <div style={{ display: 'flex', gap: 6 }}>
+                          <button style={buttonStyle} onClick={() => setSelectedWorkItemAssignmentId(row.id)}>Editar</button>
+                          <button style={dangerButtonStyle} onClick={() => removeRow('work_item_people', row.id)}>Apagar</button>
+                        </div>
+                      </div>
+                    )
+                  })}
+                </div>
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe um projeto, tarefa ou subtarefa.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderDependenciesTab() {
+    const dependencyType = dependencyTypeOptions.find((item) => item.value === dependencyForm?.dependency_type)
+
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          <div style={boxStyle}>
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Projeto da tarefa origem<select style={inputStyle} value={dependencySourceProjectId} onChange={(e) => setDependencySourceProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              <label>Projeto da tarefa destino<select style={inputStyle} value={dependencyTargetProjectId} onChange={(e) => setDependencyTargetProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+              <button onClick={createDependency} style={primaryButtonStyle}>+ Criar dependência</button>
+            </div>
+          </div>
+
+          <div style={boxStyle}>
+            <div style={{ fontWeight: 700, marginBottom: 10 }}>Dependências existentes</div>
+            <div style={{ display: 'grid', gap: 6, maxHeight: 520, overflow: 'auto' }}>
+              {filteredDependencies.map((row) => {
+                const pred = workItems.find((item) => item.id === row.predecessor_work_item_id)
+                const succ = workItems.find((item) => item.id === row.successor_work_item_id)
+                const type = dependencyTypeOptions.find((item) => item.value === row.dependency_type)
+                return (
+                  <button key={row.id} style={selectedDependencyId === row.id ? primaryButtonStyle : { ...buttonStyle, textAlign: 'left' }} onClick={() => setSelectedDependencyId(row.id)}>
+                    {pred?.name ?? row.predecessor_work_item_id} → {succ?.name ?? row.successor_work_item_id} · {type?.label ?? row.dependency_type}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          {dependencyForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Tarefa origem<select style={inputStyle} value={dependencyForm.predecessor_work_item_id} onChange={(e) => { setDependencyForm((s) => ({ ...s, predecessor_work_item_id: e.target.value })); setDirty((d) => ({ ...d, dependency: true })) }}>{filteredDependencySourceItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+              <label>Tarefa destino<select style={inputStyle} value={dependencyForm.successor_work_item_id} onChange={(e) => { setDependencyForm((s) => ({ ...s, successor_work_item_id: e.target.value })); setDirty((d) => ({ ...d, dependency: true })) }}>{filteredDependencyTargetItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+              <label>Tipo de dependência<select style={inputStyle} value={dependencyForm.dependency_type} onChange={(e) => { const next = dependencyTypeOptions.find((item) => item.value === e.target.value); setDependencyForm((s) => ({ ...s, dependency_type: e.target.value, note: s.note || next?.help || '' })); setDirty((d) => ({ ...d, dependency: true })) }}>{dependencyTypeOptions.map((item) => <option key={item.value} value={item.value}>{item.label}</option>)}</select></label>
+
+              <div style={{ ...sectionBoxStyle }}>
+                <div style={sectionTitleStyle}>Explicação atual</div>
+                <div style={{ fontSize: 13, lineHeight: 1.45 }}>{dependencyType?.help}</div>
+              </div>
+
+              <label>Tooltip / explicação editável<textarea style={{ ...inputStyle, minHeight: 110 }} value={dependencyForm.note ?? ''} onChange={(e) => { setDependencyForm((s) => ({ ...s, note: e.target.value })); setDirty((d) => ({ ...d, dependency: true })) }} /></label>
+              <label>Lag em dias<input type="number" style={inputStyle} value={dependencyForm.lag_days} onChange={(e) => { setDependencyForm((s) => ({ ...s, lag_days: e.target.value })); setDirty((d) => ({ ...d, dependency: true })) }} /></label>
+
+              <div style={{ display: 'flex', gap: 8 }}>
+                <button style={dangerButtonStyle} onClick={() => removeRow('work_item_dependencies', dependencyForm.id)}>Apagar</button>
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe ou cria uma dependência.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderAssignmentsTab() {
+    return (
+      <div style={{ display: 'grid', gap: 16 }}>
+        <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16, alignItems: 'start' }}>
+          <div style={boxStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <strong>Atribuições de área</strong>
+              <button onClick={createAreaAssignment} style={primaryButtonStyle}>+ Criar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 6, maxHeight: 340, overflow: 'auto' }}>
+              {areaPeople.map((row) => {
+                const area = areas.find((a) => a.id === row.area_id)
+                const person = people.find((p) => p.id === row.person_id)
+                return (
+                  <button key={row.id} style={selectedAreaAssignmentId === row.id ? primaryButtonStyle : { ...buttonStyle, textAlign: 'left' }} onClick={() => setSelectedAreaAssignmentId(row.id)}>
+                    {area?.name ?? row.area_id} · {person?.name ?? row.person_id} · {row.assignment_role}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div style={boxStyle}>
+            {areaAssignmentForm ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Área<select style={inputStyle} value={areaAssignmentForm.area_id} onChange={(e) => { setAreaAssignmentForm((s) => ({ ...s, area_id: e.target.value })); setDirty((d) => ({ ...d, areaAssignment: true })) }}>{areas.map((area) => <option key={area.id} value={area.id}>{area.name}</option>)}</select></label>
+                <label>Pessoa<select style={inputStyle} value={areaAssignmentForm.person_id} onChange={(e) => { setAreaAssignmentForm((s) => ({ ...s, person_id: e.target.value })); setDirty((d) => ({ ...d, areaAssignment: true })) }}>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+                <label>Papel<select style={inputStyle} value={areaAssignmentForm.assignment_role} onChange={(e) => { setAreaAssignmentForm((s) => ({ ...s, assignment_role: e.target.value })); setDirty((d) => ({ ...d, areaAssignment: true })) }}>{areaRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={areaAssignmentForm.is_primary} onChange={(e) => { setAreaAssignmentForm((s) => ({ ...s, is_primary: e.target.checked })); setDirty((d) => ({ ...d, areaAssignment: true })) }} />Principal</label>
+                <button style={dangerButtonStyle} onClick={() => removeRow('area_people', areaAssignmentForm.id)}>Apagar</button>
+              </div>
+            ) : <div>Escolhe uma atribuição de área.</div>}
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16, alignItems: 'start' }}>
+          <div style={boxStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <strong>Atribuições de função</strong>
+              <button onClick={createFunctionAssignment} style={primaryButtonStyle}>+ Criar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 6, maxHeight: 340, overflow: 'auto' }}>
+              {functionPeople.map((row) => {
+                const fn = functions.find((f) => f.id === row.function_id)
+                const person = people.find((p) => p.id === row.person_id)
+                return (
+                  <button key={row.id} style={selectedFunctionAssignmentId === row.id ? primaryButtonStyle : { ...buttonStyle, textAlign: 'left' }} onClick={() => setSelectedFunctionAssignmentId(row.id)}>
+                    {fn ? functionLabel(fn) : row.function_id} · {person?.name ?? row.person_id} · {row.assignment_role}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div style={boxStyle}>
+            {functionAssignmentForm ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Função<select style={inputStyle} value={functionAssignmentForm.function_id} onChange={(e) => { setFunctionAssignmentForm((s) => ({ ...s, function_id: e.target.value })); setDirty((d) => ({ ...d, functionAssignment: true })) }}>{functions.map((fn) => <option key={fn.id} value={fn.id}>{functionLabel(fn)}</option>)}</select></label>
+                <label>Pessoa<select style={inputStyle} value={functionAssignmentForm.person_id} onChange={(e) => { setFunctionAssignmentForm((s) => ({ ...s, person_id: e.target.value })); setDirty((d) => ({ ...d, functionAssignment: true })) }}>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+                <label>Papel<select style={inputStyle} value={functionAssignmentForm.assignment_role} onChange={(e) => { setFunctionAssignmentForm((s) => ({ ...s, assignment_role: e.target.value })); setDirty((d) => ({ ...d, functionAssignment: true })) }}>{genericRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={functionAssignmentForm.is_primary} onChange={(e) => { setFunctionAssignmentForm((s) => ({ ...s, is_primary: e.target.checked })); setDirty((d) => ({ ...d, functionAssignment: true })) }} />Principal</label>
+                <button style={dangerButtonStyle} onClick={() => removeRow('function_people', functionAssignmentForm.id)}>Apagar</button>
+              </div>
+            ) : <div>Escolhe uma atribuição de função.</div>}
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16, alignItems: 'start' }}>
+          <div style={boxStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <strong>Atribuições de projeto / tarefa</strong>
+              <button onClick={() => createWorkItemAssignment(selectedWorkItemId || workItems[0]?.id)} style={primaryButtonStyle}>+ Criar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 6, maxHeight: 340, overflow: 'auto' }}>
+              {workItemPeople.map((row) => {
+                const item = workItems.find((w) => w.id === row.work_item_id)
+                const person = people.find((p) => p.id === row.person_id)
+                return (
+                  <button key={row.id} style={selectedWorkItemAssignmentId === row.id ? primaryButtonStyle : { ...buttonStyle, textAlign: 'left' }} onClick={() => setSelectedWorkItemAssignmentId(row.id)}>
+                    {item ? workItemLabel(item) : row.work_item_id} · {person?.name ?? row.person_id} · {row.assignment_role}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div style={boxStyle}>
+            {workItemAssignmentForm ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Projeto / tarefa<select style={inputStyle} value={workItemAssignmentForm.work_item_id} onChange={(e) => { setWorkItemAssignmentForm((s) => ({ ...s, work_item_id: e.target.value })); setDirty((d) => ({ ...d, workItemAssignment: true })) }}>{workItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+                <label>Pessoa<select style={inputStyle} value={workItemAssignmentForm.person_id} onChange={(e) => { setWorkItemAssignmentForm((s) => ({ ...s, person_id: e.target.value })); setDirty((d) => ({ ...d, workItemAssignment: true })) }}>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+                <label>Papel<select style={inputStyle} value={workItemAssignmentForm.assignment_role} onChange={(e) => { setWorkItemAssignmentForm((s) => ({ ...s, assignment_role: e.target.value })); setDirty((d) => ({ ...d, workItemAssignment: true })) }}>{genericRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={workItemAssignmentForm.is_primary} onChange={(e) => { setWorkItemAssignmentForm((s) => ({ ...s, is_primary: e.target.checked })); setDirty((d) => ({ ...d, workItemAssignment: true })) }} />Principal</label>
+                <button style={dangerButtonStyle} onClick={() => removeRow('work_item_people', workItemAssignmentForm.id)}>Apagar</button>
+              </div>
+            ) : <div>Escolhe uma atribuição de projeto / tarefa.</div>}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <style>{`
+        :root {
+          font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #1d2a21;
+          background: #f6f8f4;
+        }
+
+        html, body, #root {
+          margin: 0;
+          min-height: 100%;
+          width: 100%;
+        }
+
+        body {
+          background: #f6f8f4;
+          color: #1d2a21;
+        }
+
+        * {
+          box-sizing: border-box;
+        }
+
+        table {
+          width: 100%;
+          border-collapse: collapse;
+        }
+
+        label {
+          display: grid;
+          gap: 4px;
+          font-size: 12px;
+          color: #46604d;
+        }
+
+        select, input, textarea {
+          font: inherit;
+        }
+
+        textarea {
+          resize: vertical;
+        }
+      `}</style>
+
+      <div style={{ maxWidth: 1680, margin: '0 auto', padding: '24px 18px 40px' }}>
+        {renderHeader()}
+        {renderTabs()}
+        {renderStatusBoxes()}
+
+        {loading ? <div style={boxStyle}>A carregar...</div> : null}
+
+        {!loading && tab === 'people' ? renderPeopleTab() : null}
+        {!loading && tab === 'areas' ? renderAreasTab() : null}
+        {!loading && tab === 'functions' ? renderFunctionsTab() : null}
+        {!loading && tab === 'projects' ? renderProjectsTab() : null}
+        {!loading && tab === 'dependencies' ? renderDependenciesTab() : null}
+        {!loading && tab === 'assignments' ? renderAssignmentsTab() : null}
+      </div>
+    </>
+  )
+}
+
+createRoot(document.getElementById('root')).render(<EditorApp />)

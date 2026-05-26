@@ -1,0 +1,1690 @@
+import React, { useEffect, useMemo, useState } from 'react'
+import { createRoot } from 'react-dom/client'
+import { supabase } from './supabaseClient'
+
+const workItemTypeOptions = [
+  ['project', 'Projeto'],
+  ['task', 'Tarefa'],
+  ['subtask', 'Subfunção'],
+  ['milestone', 'Marco'],
+]
+
+const workItemStatusOptions = [
+  ['not_started', 'Não iniciada'],
+  ['in_progress', 'Em curso'],
+  ['blocked', 'Bloqueada'],
+  ['done', 'Concluída'],
+  ['cancelled', 'Cancelada'],
+]
+
+const phaseOptions = [
+  ['planning', 'Planeamento'],
+  ['execution', 'Execução'],
+  ['review', 'Revisão'],
+  ['completed', 'Concluído'],
+]
+
+const priorityOptions = [
+  ['low', 'Baixa'],
+  ['medium', 'Média'],
+  ['high', 'Alta'],
+  ['critical', 'Crítica'],
+]
+
+const areaRoleOptions = [
+  ['lead', 'Responsável'],
+  ['co_lead', 'Co-responsável'],
+  ['support', 'Apoio'],
+  ['informed', 'Informado'],
+]
+
+const genericRoleOptions = [
+  ['owner', 'Responsável'],
+  ['co_owner', 'Co-responsável'],
+  ['assignee', 'Executante'],
+  ['contributor', 'Contribui'],
+  ['approver', 'Aprova'],
+  ['reviewer', 'Revê'],
+  ['informed', 'Informado'],
+  ['watcher', 'Acompanha'],
+]
+
+const dependencyTypeOptions = [
+  ['finish_to_start', 'Só começa depois da anterior terminar'],
+  ['start_to_start', 'Só começa quando a anterior começar'],
+  ['finish_to_finish', 'Só termina depois da anterior terminar'],
+  ['blocks', 'Bloqueia enquanto não estiver resolvida'],
+  ['related_to', 'Relacionada'],
+]
+
+const boxStyle = {
+  background: '#ffffff',
+  border: '1px solid #dfe7da',
+  borderRadius: 12,
+  padding: 14,
+}
+
+const inputStyle = {
+  width: '100%',
+  padding: '8px 10px',
+  borderRadius: 8,
+  border: '1px solid #cfd9ca',
+  fontSize: 13,
+  background: '#fff',
+}
+
+const buttonStyle = {
+  padding: '7px 11px',
+  borderRadius: 999,
+  border: '1px solid #cfd9ca',
+  background: '#ffffff',
+  cursor: 'pointer',
+  fontSize: 12,
+  lineHeight: 1.15,
+}
+
+const primaryButtonStyle = {
+  ...buttonStyle,
+  background: '#e8f2e0',
+  border: '1px solid #b7cda8',
+}
+
+const dangerButtonStyle = {
+  ...buttonStyle,
+  background: '#fff4f4',
+  border: '1px solid #efcaca',
+  color: '#8a2f2f',
+}
+
+const subtleBoxStyle = {
+  border: '1px solid #e3eadf',
+  borderRadius: 10,
+  padding: 10,
+  background: '#fbfcfa',
+}
+
+function emptyPerson() {
+  return { id: '', name: '', email: '', role_title: '', status: 'active' }
+}
+
+function emptyArea() {
+  return { id: '', name: '', description: '', notes: '', status: 'active' }
+}
+
+function emptyFunction(areaId = '', parentFunctionId = '') {
+  return {
+    id: '',
+    area_id: areaId,
+    parent_function_id: parentFunctionId,
+    name: '',
+    description: '',
+    notes: '',
+    status: 'active',
+  }
+}
+
+function emptyWorkItem(parentId = '', type = 'task') {
+  return {
+    id: '',
+    parent_work_item_id: parentId,
+    type,
+    name: '',
+    description: '',
+    status: 'not_started',
+    phase: 'planning',
+    priority: 'medium',
+  }
+}
+
+function emptyDependency() {
+  return {
+    id: '',
+    predecessor_work_item_id: '',
+    successor_work_item_id: '',
+    dependency_type: 'finish_to_start',
+    lag_days: 0,
+  }
+}
+
+function emptyAreaAssignment(areaId = '') {
+  return {
+    id: '',
+    area_id: areaId,
+    person_id: '',
+    assignment_role: 'lead',
+    is_primary: true,
+  }
+}
+
+function emptyFunctionAssignment(functionId = '') {
+  return {
+    id: '',
+    function_id: functionId,
+    person_id: '',
+    assignment_role: 'owner',
+    is_primary: true,
+  }
+}
+
+function emptyWorkItemAssignment() {
+  return {
+    id: '',
+    work_item_id: '',
+    person_id: '',
+    assignment_role: 'owner',
+    is_primary: true,
+  }
+}
+
+function findProject(workItem, workItemMap) {
+  let current = workItem
+  const visited = new Set()
+
+  while (current) {
+    if (visited.has(current.id)) return null
+    visited.add(current.id)
+
+    if (current.type === 'project') return current
+    if (!current.parent_work_item_id) return null
+
+    current = workItemMap.get(current.parent_work_item_id)
+  }
+
+  return null
+}
+
+function dependencyLabel(type) {
+  return {
+    finish_to_start: 'esta só pode começar depois da anterior terminar',
+    start_to_start: 'só pode começar quando a anterior começar',
+    finish_to_finish: 'só pode terminar depois da anterior terminar',
+    blocks: 'fica bloqueada enquanto a anterior não estiver resolvida',
+    related_to: 'está relacionada com a anterior',
+  }[type] ?? type
+}
+
+function dependencySentence(predecessorName, successorName, type) {
+  if (type === 'finish_to_start') {
+    return `[${successorName}] é bloqueada por [${predecessorName}] e só pode começar depois desta terminar`
+  }
+  if (type === 'start_to_start') {
+    return `[${successorName}] depende de [${predecessorName}] e só pode começar quando esta começar`
+  }
+  if (type === 'finish_to_finish') {
+    return `[${successorName}] depende de [${predecessorName}] e só pode terminar depois desta terminar`
+  }
+  if (type === 'blocks') {
+    return `[${successorName}] é bloqueada por [${predecessorName}] enquanto esta não estiver resolvida`
+  }
+  return `[${successorName}] está relacionada com [${predecessorName}]`
+}
+
+async function swapSortOrder(table, first, second) {
+  const a = first.sort_order ?? 0
+  const b = second.sort_order ?? 0
+
+  const res1 = await supabase.from(table).update({ sort_order: b }).eq('id', first.id)
+  if (res1.error) throw res1.error
+
+  const res2 = await supabase.from(table).update({ sort_order: a }).eq('id', second.id)
+  if (res2.error) throw res2.error
+}
+
+function EditorApp() {
+  const [tab, setTab] = useState('people')
+  const [loading, setLoading] = useState(true)
+  const [saving, setSaving] = useState(false)
+  const [message, setMessage] = useState('')
+  const [error, setError] = useState('')
+
+  const [people, setPeople] = useState([])
+  const [areas, setAreas] = useState([])
+  const [functions, setFunctions] = useState([])
+  const [workItems, setWorkItems] = useState([])
+  const [dependencies, setDependencies] = useState([])
+  const [areaPeople, setAreaPeople] = useState([])
+  const [functionPeople, setFunctionPeople] = useState([])
+  const [workItemPeople, setWorkItemPeople] = useState([])
+
+  const [selectedPersonId, setSelectedPersonId] = useState('')
+  const [selectedAreaId, setSelectedAreaId] = useState('')
+  const [selectedFunctionId, setSelectedFunctionId] = useState('')
+  const [selectedProjectId, setSelectedProjectId] = useState('')
+  const [selectedWorkItemId, setSelectedWorkItemId] = useState('')
+  const [selectedDependencyId, setSelectedDependencyId] = useState('')
+  const [selectedAreaAssignmentId, setSelectedAreaAssignmentId] = useState('')
+  const [selectedFunctionAssignmentId, setSelectedFunctionAssignmentId] = useState('')
+  const [selectedWorkItemAssignmentId, setSelectedWorkItemAssignmentId] = useState('')
+
+  const [personForm, setPersonForm] = useState(null)
+  const [areaForm, setAreaForm] = useState(null)
+  const [functionForm, setFunctionForm] = useState(null)
+  const [workItemForm, setWorkItemForm] = useState(null)
+  const [dependencyForm, setDependencyForm] = useState(null)
+  const [areaAssignmentForm, setAreaAssignmentForm] = useState(null)
+  const [functionAssignmentForm, setFunctionAssignmentForm] = useState(null)
+  const [workItemAssignmentForm, setWorkItemAssignmentForm] = useState(null)
+
+  const [openFunctionAreaIds, setOpenFunctionAreaIds] = useState([])
+  const [dependencySourceProjectId, setDependencySourceProjectId] = useState('')
+  const [dependencyTargetProjectId, setDependencyTargetProjectId] = useState('')
+
+  useEffect(() => {
+    loadAll()
+  }, [])
+
+  async function loadAll() {
+    setLoading(true)
+    setError('')
+    setMessage('')
+
+    const [
+      peopleRes,
+      areasRes,
+      functionsRes,
+      workItemsRes,
+      dependenciesRes,
+      areaPeopleRes,
+      functionPeopleRes,
+      workItemPeopleRes,
+    ] = await Promise.all([
+      supabase.from('people').select('*').order('name', { ascending: true }),
+      supabase.from('areas').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('functions').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('work_items').select('*').order('sort_order', { ascending: true }).order('name', { ascending: true }),
+      supabase.from('work_item_dependencies').select('*'),
+      supabase.from('area_people').select('*'),
+      supabase.from('function_people').select('*'),
+      supabase.from('work_item_people').select('*'),
+    ])
+
+    const all = [peopleRes, areasRes, functionsRes, workItemsRes, dependenciesRes, areaPeopleRes, functionPeopleRes, workItemPeopleRes]
+    const firstError = all.find((r) => r.error)
+
+    if (firstError?.error) {
+      setError(firstError.error.message)
+      setLoading(false)
+      return
+    }
+
+    setPeople(peopleRes.data ?? [])
+    setAreas(areasRes.data ?? [])
+    setFunctions(functionsRes.data ?? [])
+    setWorkItems(workItemsRes.data ?? [])
+    setDependencies(dependenciesRes.data ?? [])
+    setAreaPeople(areaPeopleRes.data ?? [])
+    setFunctionPeople(functionPeopleRes.data ?? [])
+    setWorkItemPeople(workItemPeopleRes.data ?? [])
+    setLoading(false)
+  }
+
+  function clearMessages() {
+    setError('')
+    setMessage('')
+  }
+
+  function areaLabel(areaId) {
+    return areas.find((a) => a.id === areaId)?.name ?? 'Sem área'
+  }
+
+  function functionLabel(fn) {
+    return `${areaLabel(fn.area_id)}: ${fn.name}`
+  }
+
+  function workItemLabel(item) {
+    const typeLabel = Object.fromEntries(workItemTypeOptions)[item.type] ?? item.type
+    return `${typeLabel}: ${item.name}`
+  }
+
+  function personName(personId) {
+    return people.find((p) => p.id === personId)?.name ?? ''
+  }
+
+  async function saveManual(table, form, payload, successMessage) {
+    if (!form) return false
+
+    setSaving(true)
+    clearMessages()
+
+    const res = form.id
+      ? await supabase.from(table).update(payload).eq('id', form.id)
+      : await supabase.from(table).insert(payload)
+
+    setSaving(false)
+
+    if (res.error) {
+      setError(res.error.message)
+      return false
+    }
+
+    setMessage(successMessage)
+    await loadAll()
+    return true
+  }
+
+  function deleteLabel(table, id) {
+    if (table === 'people') {
+      const item = people.find((x) => x.id === id)
+      return item ? item.name : id
+    }
+    if (table === 'areas') {
+      const item = areas.find((x) => x.id === id)
+      return item ? item.name : id
+    }
+    if (table === 'functions') {
+      const item = functions.find((x) => x.id === id)
+      return item ? `Função: ${item.name}` : id
+    }
+    if (table === 'work_items') {
+      const item = workItems.find((x) => x.id === id)
+      return item ? workItemLabel(item) : id
+    }
+    if (table === 'work_item_dependencies') {
+      const item = dependencies.find((x) => x.id === id)
+      if (!item) return id
+      const pred = workItemMap.get(item.predecessor_work_item_id)
+      const succ = workItemMap.get(item.successor_work_item_id)
+      return `${pred?.name ?? 'Sem origem'} → ${succ?.name ?? 'Sem destino'}`
+    }
+    if (table === 'area_people') {
+      const item = areaPeople.find((x) => x.id === id)
+      return item ? `${areaLabel(item.area_id)} → ${personName(item.person_id)}` : id
+    }
+    if (table === 'function_people') {
+      const item = functionPeople.find((x) => x.id === id)
+      if (!item) return id
+      const fn = functions.find((x) => x.id === item.function_id)
+      return `${fn ? functionLabel(fn) : 'Função'} → ${personName(item.person_id)}`
+    }
+    if (table === 'work_item_people') {
+      const item = workItemPeople.find((x) => x.id === id)
+      if (!item) return id
+      const wi = workItems.find((x) => x.id === item.work_item_id)
+      return `${wi ? workItemLabel(wi) : 'Projeto / tarefa'} → ${personName(item.person_id)}`
+    }
+    return id
+  }
+
+  async function removeRow(table, id) {
+    if (!id) return
+    const label = deleteLabel(table, id)
+    const ok = window.confirm(`Tens a certeza que queres apagar “${label}”?`)
+    if (!ok) return
+
+    setSaving(true)
+    clearMessages()
+
+    const res = await supabase.from(table).delete().eq('id', id)
+    setSaving(false)
+
+    if (res.error) {
+      setError(res.error.message)
+      return
+    }
+
+    setMessage('Registo apagado com sucesso.')
+    await loadAll()
+  }
+
+  const sortedAreas = useMemo(
+    () => [...areas].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt')),
+    [areas]
+  )
+
+  const sortedFunctions = useMemo(
+    () => [...functions].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt')),
+    [functions]
+  )
+
+  const sortedWorkItems = useMemo(
+    () => [...workItems].sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0) || a.name.localeCompare(b.name, 'pt')),
+    [workItems]
+  )
+
+  const projects = useMemo(
+    () => sortedWorkItems.filter((item) => item.type === 'project'),
+    [sortedWorkItems]
+  )
+
+  const workItemMap = useMemo(
+    () => new Map(workItems.map((item) => [item.id, item])),
+    [workItems]
+  )
+
+  const functionsByArea = useMemo(() => {
+    const grouped = {}
+    for (const fn of sortedFunctions) {
+      if (!grouped[fn.area_id]) grouped[fn.area_id] = []
+      grouped[fn.area_id].push(fn)
+    }
+    return grouped
+  }, [sortedFunctions])
+
+  const functionsByParent = useMemo(() => {
+    const grouped = {}
+    for (const fn of sortedFunctions) {
+      const key = fn.parent_function_id ?? '__root__'
+      if (!grouped[key]) grouped[key] = []
+      grouped[key].push(fn)
+    }
+    return grouped
+  }, [sortedFunctions])
+
+  const selectedAreaFunctions = useMemo(
+    () => sortedFunctions.filter((fn) => fn.area_id === selectedAreaId),
+    [sortedFunctions, selectedAreaId]
+  )
+
+  const selectedAreaAssignments = useMemo(
+    () => areaPeople.filter((row) => row.area_id === selectedAreaId),
+    [areaPeople, selectedAreaId]
+  )
+
+  const selectedFunctionAssignments = useMemo(
+    () => functionPeople.filter((row) => row.function_id === selectedFunctionId),
+    [functionPeople, selectedFunctionId]
+  )
+
+  const selectedProject = useMemo(
+    () => projects.find((p) => p.id === selectedProjectId) ?? null,
+    [projects, selectedProjectId]
+  )
+
+  const selectedProjectTasks = useMemo(() => {
+    if (!selectedProjectId) return []
+
+    const all = []
+    const byParent = new Map()
+
+    for (const item of sortedWorkItems) {
+      const key = item.parent_work_item_id ?? '__root__'
+      if (!byParent.has(key)) byParent.set(key, [])
+      byParent.get(key).push(item)
+    }
+
+    function walk(parentId, depth = 0) {
+      const children = byParent.get(parentId ?? '__root__') ?? []
+      for (const child of children) {
+        all.push({ ...child, depth })
+        walk(child.id, depth + 1)
+      }
+    }
+
+    walk(selectedProjectId, 0)
+    return all
+  }, [selectedProjectId, sortedWorkItems])
+
+  const filteredDependencySourceItems = useMemo(() => {
+    if (!dependencySourceProjectId) return []
+    return sortedWorkItems.filter((item) => {
+      const project = findProject(item, workItemMap)
+      return project?.id === dependencySourceProjectId && item.type !== 'project'
+    })
+  }, [dependencySourceProjectId, sortedWorkItems, workItemMap])
+
+  const filteredDependencyTargetItems = useMemo(() => {
+    if (!dependencyTargetProjectId) return []
+    return sortedWorkItems.filter((item) => {
+      const project = findProject(item, workItemMap)
+      return project?.id === dependencyTargetProjectId && item.type !== 'project'
+    })
+  }, [dependencyTargetProjectId, sortedWorkItems, workItemMap])
+
+  const selectedWorkItemIncomingDependencies = useMemo(
+    () => dependencies.filter((dep) => dep.successor_work_item_id === selectedWorkItemId),
+    [dependencies, selectedWorkItemId]
+  )
+
+  const selectedWorkItemOutgoingDependencies = useMemo(
+    () => dependencies.filter((dep) => dep.predecessor_work_item_id === selectedWorkItemId),
+    [dependencies, selectedWorkItemId]
+  )
+
+  const selectedWorkItemProjectId = useMemo(() => {
+    const item = workItemMap.get(selectedWorkItemId)
+    if (!item) return ''
+    return findProject(item, workItemMap)?.id ?? ''
+  }, [selectedWorkItemId, workItemMap])
+
+  function createDependencyIncomingForSelectedTask() {
+    if (!selectedWorkItemId) return
+    setSelectedDependencyId('')
+    setDependencySourceProjectId(selectedWorkItemProjectId || '')
+    setDependencyTargetProjectId(selectedWorkItemProjectId || '')
+    setDependencyForm({
+      ...emptyDependency(),
+      successor_work_item_id: selectedWorkItemId,
+    })
+  }
+
+  function createDependencyOutgoingForSelectedTask() {
+    if (!selectedWorkItemId) return
+    setSelectedDependencyId('')
+    setDependencySourceProjectId(selectedWorkItemProjectId || '')
+    setDependencyTargetProjectId(selectedWorkItemProjectId || '')
+    setDependencyForm({
+      ...emptyDependency(),
+      predecessor_work_item_id: selectedWorkItemId,
+    })
+  }
+
+  function createNewPerson() {
+    setSelectedPersonId('')
+    setPersonForm(emptyPerson())
+  }
+
+  function createNewArea() {
+    setSelectedAreaId('')
+    setSelectedFunctionId('')
+    setAreaForm(emptyArea())
+    setFunctionForm(null)
+    setAreaAssignmentForm(null)
+    setFunctionAssignmentForm(null)
+  }
+
+  function createNewFunction(areaId = '', parentFunctionId = '') {
+    setSelectedFunctionId('')
+    setFunctionForm(emptyFunction(areaId, parentFunctionId))
+    setFunctionAssignmentForm(null)
+    if (areaId) setSelectedAreaId(areaId)
+  }
+
+  function createNewProject() {
+    setSelectedProjectId('')
+    setSelectedWorkItemId('')
+    setWorkItemForm(emptyWorkItem('', 'project'))
+  }
+
+  function createNewTask(parentId = '', type = 'task') {
+    setSelectedWorkItemId('')
+    setWorkItemForm(emptyWorkItem(parentId, type))
+  }
+
+  function createNewDependency() {
+    setSelectedDependencyId('')
+    setDependencyForm(emptyDependency())
+  }
+
+  function createNewAreaAssignment(areaId = selectedAreaId) {
+    setSelectedAreaAssignmentId('')
+    setAreaAssignmentForm(emptyAreaAssignment(areaId))
+  }
+
+  function createNewFunctionAssignment(functionId = selectedFunctionId) {
+    setSelectedFunctionAssignmentId('')
+    setFunctionAssignmentForm(emptyFunctionAssignment(functionId))
+  }
+
+  function createNewWorkItemAssignment() {
+    setSelectedWorkItemAssignmentId('')
+    setWorkItemAssignmentForm(emptyWorkItemAssignment())
+  }
+
+  async function moveArea(id, direction) {
+    const index = sortedAreas.findIndex((item) => item.id === id)
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (index === -1 || target < 0 || target >= sortedAreas.length) return
+
+    try {
+      setSaving(true)
+      clearMessages()
+      await swapSortOrder('areas', sortedAreas[index], sortedAreas[target])
+      setMessage('Ordem das áreas atualizada.')
+      await loadAll()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function moveFunction(id, direction) {
+    const current = functions.find((fn) => fn.id === id)
+    if (!current) return
+
+    const siblings = sortedFunctions.filter(
+      (fn) =>
+        fn.area_id === current.area_id &&
+        (fn.parent_function_id ?? '') === (current.parent_function_id ?? '')
+    )
+    const index = siblings.findIndex((item) => item.id === id)
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (index === -1 || target < 0 || target >= siblings.length) return
+
+    try {
+      setSaving(true)
+      clearMessages()
+      await swapSortOrder('functions', siblings[index], siblings[target])
+      setMessage('Ordem das funções atualizada.')
+      await loadAll()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function moveWorkItem(id, direction) {
+    const current = workItems.find((item) => item.id === id)
+    if (!current) return
+
+    const siblings = sortedWorkItems.filter(
+      (item) => (item.parent_work_item_id ?? '') === (current.parent_work_item_id ?? '')
+    )
+    const index = siblings.findIndex((item) => item.id === id)
+    const target = direction === 'up' ? index - 1 : index + 1
+    if (index === -1 || target < 0 || target >= siblings.length) return
+
+    try {
+      setSaving(true)
+      clearMessages()
+      await swapSortOrder('work_items', siblings[index], siblings[target])
+      setMessage('Ordem das tarefas atualizada.')
+      await loadAll()
+    } catch (err) {
+      setError(err.message)
+    } finally {
+      setSaving(false)
+    }
+  }
+
+  async function savePerson() {
+    if (!personForm?.name?.trim()) {
+      setError('O nome é obrigatório.')
+      return
+    }
+
+    const ok = await saveManual(
+      'people',
+      personForm,
+      {
+        name: personForm.name,
+        email: personForm.email || null,
+        role_title: personForm.role_title || null,
+        status: personForm.status,
+      },
+      'Pessoa gravada com sucesso.'
+    )
+
+    if (ok && !personForm.id) setPersonForm(null)
+  }
+
+  async function saveArea() {
+    if (!areaForm?.name?.trim()) {
+      setError('O nome da área é obrigatório.')
+      return
+    }
+
+    const payload = {
+      name: areaForm.name,
+      description: areaForm.description || null,
+      notes: areaForm.notes || null,
+      status: areaForm.status,
+    }
+
+    if (!areaForm.id) {
+      payload.sort_order = (sortedAreas.at(-1)?.sort_order ?? 0) + 1
+    } else {
+      payload.sort_order = areaForm.sort_order ?? 0
+    }
+
+    const ok = await saveManual('areas', areaForm, payload, 'Área gravada com sucesso.')
+    if (ok && !areaForm.id) setAreaForm(null)
+  }
+
+  async function saveFunction() {
+    if (!functionForm?.area_id) {
+      setError('Escolhe uma área.')
+      return
+    }
+    if (!functionForm?.name?.trim()) {
+      setError('O nome da função é obrigatório.')
+      return
+    }
+
+    const siblings = sortedFunctions.filter(
+      (fn) =>
+        fn.area_id === functionForm.area_id &&
+        (fn.parent_function_id ?? '') === (functionForm.parent_function_id ?? '') &&
+        fn.id !== functionForm.id
+    )
+
+    const payload = {
+      area_id: functionForm.area_id,
+      parent_function_id: functionForm.parent_function_id || null,
+      name: functionForm.name,
+      description: functionForm.description || null,
+      notes: functionForm.notes || null,
+      status: functionForm.status,
+      level: functionForm.parent_function_id ? 2 : 1,
+    }
+
+    if (!functionForm.id) {
+      payload.sort_order = siblings.length ? Math.max(...siblings.map((x) => x.sort_order ?? 0)) + 1 : 1
+    } else {
+      payload.sort_order = functionForm.sort_order ?? 0
+    }
+
+    const ok = await saveManual('functions', functionForm, payload, 'Função gravada com sucesso.')
+    if (ok && !functionForm.id) setFunctionForm(null)
+  }
+
+  async function saveWorkItem() {
+    if (!workItemForm?.name?.trim()) {
+      setError('O nome é obrigatório.')
+      return
+    }
+
+    const siblings = sortedWorkItems.filter(
+      (item) =>
+        (item.parent_work_item_id ?? '') === (workItemForm.parent_work_item_id ?? '') &&
+        item.id !== workItemForm.id
+    )
+
+    const payload = {
+      parent_work_item_id: workItemForm.parent_work_item_id || null,
+      type: workItemForm.type,
+      name: workItemForm.name,
+      description: workItemForm.description || null,
+      status: workItemForm.status,
+      phase: workItemForm.phase,
+      priority: workItemForm.priority,
+    }
+
+    if (!workItemForm.id) {
+      payload.sort_order = siblings.length ? Math.max(...siblings.map((x) => x.sort_order ?? 0)) + 1 : 1
+    } else {
+      payload.sort_order = workItemForm.sort_order ?? 0
+    }
+
+    const ok = await saveManual('work_items', workItemForm, payload, 'Projeto / tarefa gravado com sucesso.')
+    if (ok && !workItemForm.id) setWorkItemForm(null)
+  }
+
+  async function saveDependency() {
+    if (!dependencyForm?.predecessor_work_item_id || !dependencyForm?.successor_work_item_id) {
+      setError('Escolhe tarefa origem e tarefa destino.')
+      return
+    }
+    if (dependencyForm.predecessor_work_item_id === dependencyForm.successor_work_item_id) {
+      setError('Origem e destino não podem ser a mesma tarefa.')
+      return
+    }
+
+    const ok = await saveManual(
+      'work_item_dependencies',
+      dependencyForm,
+      {
+        predecessor_work_item_id: dependencyForm.predecessor_work_item_id,
+        successor_work_item_id: dependencyForm.successor_work_item_id,
+        dependency_type: dependencyForm.dependency_type,
+        lag_days: Number(dependencyForm.lag_days) || 0,
+      },
+      'Dependência gravada com sucesso.'
+    )
+
+    if (ok && !dependencyForm.id) setDependencyForm(null)
+  }
+
+  async function saveAreaAssignment() {
+    if (!areaAssignmentForm?.area_id || !areaAssignmentForm?.person_id) {
+      setError('Escolhe área e pessoa.')
+      return
+    }
+
+    const ok = await saveManual(
+      'area_people',
+      areaAssignmentForm,
+      {
+        area_id: areaAssignmentForm.area_id,
+        person_id: areaAssignmentForm.person_id,
+        assignment_role: areaAssignmentForm.assignment_role,
+        is_primary: areaAssignmentForm.is_primary,
+      },
+      'Responsável da área gravado com sucesso.'
+    )
+
+    if (ok && !areaAssignmentForm.id) setAreaAssignmentForm(null)
+  }
+
+  async function saveFunctionAssignment() {
+    if (!functionAssignmentForm?.function_id || !functionAssignmentForm?.person_id) {
+      setError('Escolhe função e pessoa.')
+      return
+    }
+
+    const ok = await saveManual(
+      'function_people',
+      functionAssignmentForm,
+      {
+        function_id: functionAssignmentForm.function_id,
+        person_id: functionAssignmentForm.person_id,
+        assignment_role: functionAssignmentForm.assignment_role,
+        is_primary: functionAssignmentForm.is_primary,
+      },
+      'Responsável da função gravado com sucesso.'
+    )
+
+    if (ok && !functionAssignmentForm.id) setFunctionAssignmentForm(null)
+  }
+
+  async function saveWorkItemAssignment() {
+    if (!workItemAssignmentForm?.work_item_id || !workItemAssignmentForm?.person_id) {
+      setError('Escolhe projeto/tarefa e pessoa.')
+      return
+    }
+
+    const ok = await saveManual(
+      'work_item_people',
+      workItemAssignmentForm,
+      {
+        work_item_id: workItemAssignmentForm.work_item_id,
+        person_id: workItemAssignmentForm.person_id,
+        assignment_role: workItemAssignmentForm.assignment_role,
+        is_primary: workItemAssignmentForm.is_primary,
+      },
+      'Atribuição de projeto/tarefa gravada com sucesso.'
+    )
+
+    if (ok && !workItemAssignmentForm.id) setWorkItemAssignmentForm(null)
+  }
+
+  function renderPeopleTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Pessoas</strong>
+            <button onClick={createNewPerson} style={primaryButtonStyle}>+ Criar</button>
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {people.map((row) => (
+              <button
+                key={row.id}
+                style={{ ...(selectedPersonId === row.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                onClick={() => {
+                  setSelectedPersonId(row.id)
+                  setPersonForm({ ...row })
+                }}
+              >
+                {row.name}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          {personForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Nome<input style={inputStyle} value={personForm.name} onChange={(e) => setPersonForm((s) => ({ ...s, name: e.target.value }))} /></label>
+              <label>Email<input style={inputStyle} value={personForm.email ?? ''} onChange={(e) => setPersonForm((s) => ({ ...s, email: e.target.value }))} /></label>
+              <label>Cargo / título<input style={inputStyle} value={personForm.role_title ?? ''} onChange={(e) => setPersonForm((s) => ({ ...s, role_title: e.target.value }))} /></label>
+              <label>Estado<select style={inputStyle} value={personForm.status} onChange={(e) => setPersonForm((s) => ({ ...s, status: e.target.value }))}><option value="active">active</option><option value="inactive">inactive</option></select></label>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button style={primaryButtonStyle} onClick={savePerson}>Gravar</button>
+                <button style={buttonStyle} onClick={() => setPersonForm(null)}>Cancelar</button>
+                {personForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('people', personForm.id)}>Apagar</button> : null}
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe uma pessoa à esquerda.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderFunctionTreeForArea(parentId = '', depth = 0) {
+    const key = parentId || '__root__'
+    const items = (functionsByParent[key] ?? []).filter((fn) => fn.area_id === selectedAreaId)
+    if (!items.length) return null
+
+    return (
+      <div style={{ display: 'grid', gap: 6 }}>
+        {items.map((fn) => (
+          <div key={fn.id}>
+            <div style={{ display: 'flex', gap: 6, marginLeft: depth * 16 }}>
+              <button
+                style={{ ...(selectedFunctionId === fn.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }}
+                onClick={() => {
+                  setSelectedFunctionId(fn.id)
+                  setFunctionForm({ ...fn })
+                  setFunctionAssignmentForm(null)
+                }}
+              >
+                {fn.name}
+              </button>
+              {selectedFunctionId === fn.id ? (
+                <>
+                  <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'up')}>↑</button>
+                  <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'down')}>↓</button>
+                </>
+              ) : null}
+              <button style={buttonStyle} onClick={() => createNewFunction(selectedAreaId, fn.id)}>+ Sub</button>
+            </div>
+            <div style={{ marginTop: 6 }}>{renderFunctionTreeForArea(fn.id, depth + 1)}</div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderAreaFunctionEditor() {
+    if (!functionForm || functionForm.area_id !== selectedAreaId) {
+      return <div />
+    }
+
+    return (
+      <div style={{ display: 'grid', gap: 10 }}>
+        <label>Função mãe<select style={inputStyle} value={functionForm.parent_function_id ?? ''} onChange={(e) => setFunctionForm((s) => ({ ...s, parent_function_id: e.target.value }))}><option value="">Nenhuma</option>{selectedAreaFunctions.filter((fn) => fn.id !== functionForm.id).map((fn) => <option key={fn.id} value={fn.id}>{fn.name}</option>)}</select></label>
+        <label>Nome<input style={inputStyle} value={functionForm.name} onChange={(e) => setFunctionForm((s) => ({ ...s, name: e.target.value }))} /></label>
+        <label>Descrição<textarea style={{ ...inputStyle, minHeight: 80 }} value={functionForm.description ?? ''} onChange={(e) => setFunctionForm((s) => ({ ...s, description: e.target.value }))} /></label>
+        <label>Notas<textarea style={{ ...inputStyle, minHeight: 80 }} value={functionForm.notes ?? ''} onChange={(e) => setFunctionForm((s) => ({ ...s, notes: e.target.value }))} /></label>
+        <label>Estado<select style={inputStyle} value={functionForm.status} onChange={(e) => setFunctionForm((s) => ({ ...s, status: e.target.value }))}><option value="active">active</option><option value="inactive">inactive</option><option value="archived">archived</option></select></label>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+          <button style={primaryButtonStyle} onClick={saveFunction}>Gravar função</button>
+          <button style={buttonStyle} onClick={() => setFunctionForm(null)}>Cancelar</button>
+          {functionForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('functions', functionForm.id)}>Apagar</button> : null}
+        </div>
+
+        <div style={subtleBoxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8 }}>
+            <strong style={{ fontSize: 13 }}>Responsáveis da função</strong>
+            <button style={primaryButtonStyle} onClick={() => createNewFunctionAssignment(functionForm.id)}>+ Adicionar</button>
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            {selectedFunctionAssignments.map((row) => (
+              <button
+                key={row.id}
+                style={{ ...buttonStyle, textAlign: 'left' }}
+                onClick={() => {
+                  setSelectedFunctionAssignmentId(row.id)
+                  setFunctionAssignmentForm({ ...row })
+                }}
+              >
+                {personName(row.person_id)} · {row.assignment_role}
+              </button>
+            ))}
+            {!selectedFunctionAssignments.length ? <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem responsáveis atribuídos.</div> : null}
+          </div>
+
+          {functionAssignmentForm && functionAssignmentForm.function_id === functionForm.id ? (
+            <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+              <label>Pessoa<select style={inputStyle} value={functionAssignmentForm.person_id} onChange={(e) => setFunctionAssignmentForm((s) => ({ ...s, person_id: e.target.value }))}><option value="">Escolher</option>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+              <label>Papel<select style={inputStyle} value={functionAssignmentForm.assignment_role} onChange={(e) => setFunctionAssignmentForm((s) => ({ ...s, assignment_role: e.target.value }))}>{genericRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={!!functionAssignmentForm.is_primary} onChange={(e) => setFunctionAssignmentForm((s) => ({ ...s, is_primary: e.target.checked }))} />Principal</label>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button style={primaryButtonStyle} onClick={saveFunctionAssignment}>Gravar responsável</button>
+                <button style={buttonStyle} onClick={() => setFunctionAssignmentForm(null)}>Cancelar</button>
+                {functionAssignmentForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('function_people', functionAssignmentForm.id)}>Apagar</button> : null}
+              </div>
+            </div>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderAreasTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '320px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Áreas</strong>
+            <button onClick={createNewArea} style={primaryButtonStyle}>+ Criar</button>
+          </div>
+          <div style={{ display: 'grid', gap: 6 }}>
+            {sortedAreas.map((row) => (
+              <div key={row.id} style={{ display: 'flex', gap: 6 }}>
+                <button
+                  style={{ ...(selectedAreaId === row.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }}
+                  onClick={() => {
+                    setSelectedAreaId(row.id)
+                    setSelectedFunctionId('')
+                    setAreaForm({ ...row })
+                    setFunctionForm(null)
+                    setAreaAssignmentForm(null)
+                    setFunctionAssignmentForm(null)
+                  }}
+                >
+                  {row.name}
+                </button>
+                {selectedAreaId === row.id ? (
+                  <>
+                    <button style={buttonStyle} onClick={() => moveArea(row.id, 'up')}>↑</button>
+                    <button style={buttonStyle} onClick={() => moveArea(row.id, 'down')}>↓</button>
+                  </>
+                ) : null}
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div style={{ display: 'grid', gap: 16 }}>
+          <div style={boxStyle}>
+            {areaForm ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Nome<input style={inputStyle} value={areaForm.name} onChange={(e) => setAreaForm((s) => ({ ...s, name: e.target.value }))} /></label>
+                <label>Descrição<textarea style={{ ...inputStyle, minHeight: 80 }} value={areaForm.description ?? ''} onChange={(e) => setAreaForm((s) => ({ ...s, description: e.target.value }))} /></label>
+                <label>Notas<textarea style={{ ...inputStyle, minHeight: 80 }} value={areaForm.notes ?? ''} onChange={(e) => setAreaForm((s) => ({ ...s, notes: e.target.value }))} /></label>
+                <label>Estado<select style={inputStyle} value={areaForm.status} onChange={(e) => setAreaForm((s) => ({ ...s, status: e.target.value }))}><option value="active">active</option><option value="inactive">inactive</option><option value="archived">archived</option></select></label>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button style={primaryButtonStyle} onClick={saveArea}>Gravar área</button>
+                  <button style={buttonStyle} onClick={() => setAreaForm(null)}>Cancelar</button>
+                  {areaForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('areas', areaForm.id)}>Apagar</button> : null}
+                </div>
+              </div>
+            ) : (
+              <div>Escolhe uma área à esquerda.</div>
+            )}
+          </div>
+
+          {selectedAreaId ? (
+            <>
+              <div style={boxStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                  <strong>Responsáveis da área</strong>
+                  <button style={primaryButtonStyle} onClick={() => createNewAreaAssignment(selectedAreaId)}>+ Adicionar</button>
+                </div>
+
+                <div style={{ display: 'grid', gap: 6 }}>
+                  {selectedAreaAssignments.map((row) => (
+                    <button
+                      key={row.id}
+                      style={{ ...buttonStyle, textAlign: 'left' }}
+                      onClick={() => {
+                        setSelectedAreaAssignmentId(row.id)
+                        setAreaAssignmentForm({ ...row })
+                      }}
+                    >
+                      {personName(row.person_id)} · {row.assignment_role}
+                    </button>
+                  ))}
+                  {!selectedAreaAssignments.length ? <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem responsáveis atribuídos.</div> : null}
+                </div>
+
+                {areaAssignmentForm && areaAssignmentForm.area_id === selectedAreaId ? (
+                  <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                    <label>Pessoa<select style={inputStyle} value={areaAssignmentForm.person_id} onChange={(e) => setAreaAssignmentForm((s) => ({ ...s, person_id: e.target.value }))}><option value="">Escolher</option>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+                    <label>Papel<select style={inputStyle} value={areaAssignmentForm.assignment_role} onChange={(e) => setAreaAssignmentForm((s) => ({ ...s, assignment_role: e.target.value }))}>{areaRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                    <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={!!areaAssignmentForm.is_primary} onChange={(e) => setAreaAssignmentForm((s) => ({ ...s, is_primary: e.target.checked }))} />Principal</label>
+
+                    <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                      <button style={primaryButtonStyle} onClick={saveAreaAssignment}>Gravar responsável</button>
+                      <button style={buttonStyle} onClick={() => setAreaAssignmentForm(null)}>Cancelar</button>
+                      {areaAssignmentForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('area_people', areaAssignmentForm.id)}>Apagar</button> : null}
+                    </div>
+                  </div>
+                ) : null}
+              </div>
+
+              <div style={boxStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                  <strong>Funções e subfunções da área</strong>
+                  <button style={primaryButtonStyle} onClick={() => createNewFunction(selectedAreaId)}>+ Nova função</button>
+                </div>
+
+                <div style={{ display: 'grid', gap: 10 }}>
+                  {renderFunctionTreeForArea()}
+                  {!selectedAreaFunctions.length ? <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem funções nesta área.</div> : null}
+                </div>
+              </div>
+
+              <div style={boxStyle}>
+                {renderAreaFunctionEditor()}
+              </div>
+            </>
+          ) : null}
+        </div>
+      </div>
+    )
+  }
+
+  function renderFunctionsTree(areaId, parentId = '', depth = 0) {
+    const items = (functionsByArea[areaId] ?? []).filter((fn) => (fn.parent_function_id ?? '') === (parentId ?? ''))
+    if (!items.length) return null
+
+    return (
+      <div style={{ display: 'grid', gap: 6 }}>
+        {items.map((fn) => (
+          <div key={fn.id}>
+            <div style={{ display: 'flex', gap: 6, marginLeft: depth * 16 }}>
+              <button
+                style={{ ...(selectedFunctionId === fn.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }}
+                onClick={() => {
+                  setSelectedFunctionId(fn.id)
+                  setFunctionForm({ ...fn })
+                }}
+              >
+                {fn.name}
+              </button>
+              <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'up')}>↑</button>
+              <button style={buttonStyle} onClick={() => moveFunction(fn.id, 'down')}>↓</button>
+            </div>
+
+            <div style={{ marginTop: 6 }}>
+              {renderFunctionsTree(areaId, fn.id, depth + 1)}
+            </div>
+          </div>
+        ))}
+      </div>
+    )
+  }
+
+  function renderFunctionsTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={{ display: 'grid', gap: 12 }}>
+          {sortedAreas.map((area) => {
+            const isOpen = openFunctionAreaIds.includes(area.id)
+            return (
+              <div key={area.id} style={boxStyle}>
+                <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+                  <button
+                    onClick={() =>
+                      setOpenFunctionAreaIds((prev) =>
+                        prev.includes(area.id) ? prev.filter((id) => id !== area.id) : [...prev, area.id]
+                      )
+                    }
+                    style={{ ...buttonStyle, flex: 1, textAlign: 'left' }}
+                  >
+                    {isOpen ? '−' : '+'} {area.name}
+                  </button>
+                </div>
+
+                {isOpen ? renderFunctionsTree(area.id) : null}
+              </div>
+            )
+          })}
+        </div>
+
+        <div style={boxStyle}>
+          <div style={{ fontSize: 12, color: '#5f6f66' }}>
+            Esta vista mantém-se temporariamente como apoio técnico. A edição principal de funções e subfunções está agora dentro de Áreas.
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  function renderWorkItemsTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '380px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Projetos</strong>
+            <button onClick={createNewProject} style={primaryButtonStyle}>+ Criar projeto</button>
+          </div>
+
+          <div style={{ display: 'grid', gap: 6 }}>
+            {projects.map((project) => (
+              <button
+                key={project.id}
+                style={{ ...(selectedProjectId === project.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                onClick={() => {
+                  setSelectedProjectId(project.id)
+                  setSelectedWorkItemId(project.id)
+                  setWorkItemForm({ ...project })
+                }}
+              >
+                {project.name}
+              </button>
+            ))}
+          </div>
+
+          {selectedProject ? (
+            <div style={{ marginTop: 12 }}>
+              <button onClick={() => createNewTask(selectedProject.id, 'task')} style={primaryButtonStyle}>
+                + Criar tarefa neste projeto
+              </button>
+            </div>
+          ) : null}
+
+          {selectedProjectTasks.length ? (
+            <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+              {selectedProjectTasks.map((item) => (
+                <div key={item.id} style={{ display: 'flex', gap: 6, marginLeft: item.depth * 14 }}>
+                  <button
+                    style={{ ...(selectedWorkItemId === item.id ? primaryButtonStyle : buttonStyle), flex: 1, textAlign: 'left' }}
+                    onClick={() => {
+                      setSelectedWorkItemId(item.id)
+                      setWorkItemForm({ ...item })
+                    }}
+                  >
+                    {workItemLabel(item)}
+                  </button>
+                  {selectedWorkItemId === item.id ? (
+                    <>
+                      <button style={buttonStyle} onClick={() => moveWorkItem(item.id, 'up')}>↑</button>
+                      <button style={buttonStyle} onClick={() => moveWorkItem(item.id, 'down')}>↓</button>
+                    </>
+                  ) : null}
+                </div>
+              ))}
+            </div>
+          ) : null}
+        </div>
+
+        <div style={boxStyle}>
+          {workItemForm ? (
+            <div style={{ display: 'grid', gap: 14 }}>
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Tipo<select style={inputStyle} value={workItemForm.type} onChange={(e) => setWorkItemForm((s) => ({ ...s, type: e.target.value }))}>{workItemTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label>Item pai<select style={inputStyle} value={workItemForm.parent_work_item_id ?? ''} onChange={(e) => setWorkItemForm((s) => ({ ...s, parent_work_item_id: e.target.value }))}><option value="">Nenhum</option>{sortedWorkItems.filter((item) => item.id !== workItemForm.id).map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+                <label>Nome<input style={inputStyle} value={workItemForm.name} onChange={(e) => setWorkItemForm((s) => ({ ...s, name: e.target.value }))} /></label>
+                <label>Descrição<textarea style={{ ...inputStyle, minHeight: 100 }} value={workItemForm.description ?? ''} onChange={(e) => setWorkItemForm((s) => ({ ...s, description: e.target.value }))} /></label>
+                <label>Estado<select style={inputStyle} value={workItemForm.status} onChange={(e) => setWorkItemForm((s) => ({ ...s, status: e.target.value }))}>{workItemStatusOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label>Fase<select style={inputStyle} value={workItemForm.phase} onChange={(e) => setWorkItemForm((s) => ({ ...s, phase: e.target.value }))}>{phaseOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label>Prioridade<select style={inputStyle} value={workItemForm.priority} onChange={(e) => setWorkItemForm((s) => ({ ...s, priority: e.target.value }))}>{priorityOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button style={primaryButtonStyle} onClick={saveWorkItem}>Gravar</button>
+                  <button style={buttonStyle} onClick={() => setWorkItemForm(null)}>Cancelar</button>
+                  {workItemForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('work_items', workItemForm.id)}>Apagar</button> : null}
+                </div>
+              </div>
+
+
+              {workItemForm.id ? (
+                <div style={subtleBoxStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: 13 }}>Responsáveis desta tarefa</strong>
+                    <button
+                      style={primaryButtonStyle}
+                      onClick={() => {
+                        setSelectedWorkItemAssignmentId('')
+                        setWorkItemAssignmentForm({
+                          ...emptyWorkItemAssignment(),
+                          work_item_id: workItemForm.id,
+                        })
+                      }}
+                    >
+                      + Adicionar
+                    </button>
+                  </div>
+
+                  <div style={{ display: 'grid', gap: 6 }}>
+                    {workItemPeople.filter((row) => row.work_item_id === workItemForm.id).map((row) => (
+                      <button
+                        key={row.id}
+                        style={{ ...(selectedWorkItemAssignmentId === row.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                        onClick={() => {
+                          setSelectedWorkItemAssignmentId(row.id)
+                          setWorkItemAssignmentForm({ ...row })
+                        }}
+                      >
+                        {personName(row.person_id)} · {row.assignment_role}
+                      </button>
+                    ))}
+                    {!workItemPeople.filter((row) => row.work_item_id === workItemForm.id).length ? (
+                      <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem responsáveis atribuídos.</div>
+                    ) : null}
+                  </div>
+
+                  {workItemAssignmentForm && workItemAssignmentForm.work_item_id === workItemForm.id ? (
+                    <div style={{ display: 'grid', gap: 8, marginTop: 10 }}>
+                      <label>
+                        Pessoa
+                        <select
+                          style={inputStyle}
+                          value={workItemAssignmentForm.person_id}
+                          onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, person_id: e.target.value }))}
+                        >
+                          <option value="">Escolher</option>
+                          {people.map((person) => (
+                            <option key={person.id} value={person.id}>{person.name}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label>
+                        Papel
+                        <select
+                          style={inputStyle}
+                          value={workItemAssignmentForm.assignment_role}
+                          onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, assignment_role: e.target.value }))}
+                        >
+                          {genericRoleOptions.map(([value, label]) => (
+                            <option key={value} value={value}>{label}</option>
+                          ))}
+                        </select>
+                      </label>
+
+                      <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}>
+                        <input
+                          type="checkbox"
+                          checked={!!workItemAssignmentForm.is_primary}
+                          onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, is_primary: e.target.checked }))}
+                        />
+                        Principal
+                      </label>
+
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button style={primaryButtonStyle} onClick={saveWorkItemAssignment}>Gravar responsável</button>
+                        <button style={buttonStyle} onClick={() => setWorkItemAssignmentForm(null)}>Cancelar</button>
+                        {workItemAssignmentForm.id ? (
+                          <button
+                            style={dangerButtonStyle}
+                            onClick={() => removeRow('work_item_people', workItemAssignmentForm.id)}
+                          >
+                            Apagar
+                          </button>
+                        ) : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+
+              {workItemForm.id && workItemForm.type !== 'project' ? (
+                <div style={subtleBoxStyle}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 8, flexWrap: 'wrap' }}>
+                    <strong style={{ fontSize: 13 }}>Dependências desta tarefa</strong>
+                  </div>
+
+                  <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 12, alignItems: 'start' }}>
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div>
+                        <button style={primaryButtonStyle} onClick={createDependencyIncomingForSelectedTask}>+ Esta tarefa depende de...</button>
+                      </div>
+                      <strong style={{ fontSize: 12 }}>O que bloqueia a tarefa:</strong>
+                      {selectedWorkItemIncomingDependencies.map((dep) => {
+                        const pred = workItemMap.get(dep.predecessor_work_item_id)
+                        const predName = pred?.name ?? 'Sem origem'
+                        const currentName = workItemForm.name ?? 'Sem nome'
+                        return (
+                          <button
+                            key={dep.id}
+                            style={{ ...(selectedDependencyId === dep.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                            onClick={() => {
+                              setSelectedDependencyId(dep.id)
+                              setDependencyForm({ ...dep })
+                              const predProject = pred ? findProject(pred, workItemMap)?.id ?? '' : ''
+                              setDependencySourceProjectId(predProject)
+                              setDependencyTargetProjectId(selectedWorkItemProjectId || '')
+                            }}
+                          >
+                            {dependencySentence(predName, currentName, dep.dependency_type)}
+                          </button>
+                        )
+                      })}
+                      {!selectedWorkItemIncomingDependencies.length ? <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem dependências de entrada.</div> : null}
+                    </div>
+
+                    <div style={{ display: 'grid', gap: 6 }}>
+                      <div>
+                        <button style={buttonStyle} onClick={createDependencyOutgoingForSelectedTask}>+ Esta tarefa bloqueia...</button>
+                      </div>
+                      <strong style={{ fontSize: 12 }}>O que esta tarefa bloqueia</strong>
+                      {selectedWorkItemOutgoingDependencies.map((dep) => {
+                        const succ = workItemMap.get(dep.successor_work_item_id)
+                        const succName = succ?.name ?? 'Sem destino'
+                        const currentName = workItemForm.name ?? 'Sem nome'
+                        return (
+                          <button
+                            key={dep.id}
+                            style={{ ...(selectedDependencyId === dep.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                            onClick={() => {
+                              setSelectedDependencyId(dep.id)
+                              setDependencyForm({ ...dep })
+                              setDependencySourceProjectId(selectedWorkItemProjectId || '')
+                              const succProject = succ ? findProject(succ, workItemMap)?.id ?? '' : ''
+                              setDependencyTargetProjectId(succProject)
+                            }}
+                          >
+                            {`[${currentName}] bloqueia [${succName}] e ${dependencyLabel(dep.dependency_type)}`}
+                          </button>
+                        )
+                      })}
+                      {!selectedWorkItemOutgoingDependencies.length ? <div style={{ fontSize: 12, color: '#5f6f66' }}>Sem dependências de saída.</div> : null}
+                    </div>
+                  </div>
+
+                  {dependencyForm && (dependencyForm.successor_work_item_id === workItemForm.id || dependencyForm.predecessor_work_item_id === workItemForm.id) ? (
+                    <div style={{ display: 'grid', gap: 10, marginTop: 12 }}>
+                      <label>Projeto da tarefa origem<select style={inputStyle} value={dependencySourceProjectId} onChange={(e) => setDependencySourceProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+                      <label>Tarefa origem<select style={inputStyle} value={dependencyForm.predecessor_work_item_id} onChange={(e) => setDependencyForm((s) => ({ ...s, predecessor_work_item_id: e.target.value }))}><option value="">Escolher</option>{filteredDependencySourceItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+                      <label>Projeto da tarefa destino<select style={inputStyle} value={dependencyTargetProjectId} onChange={(e) => setDependencyTargetProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+                      <label>Tarefa destino<select style={inputStyle} value={dependencyForm.successor_work_item_id} onChange={(e) => setDependencyForm((s) => ({ ...s, successor_work_item_id: e.target.value }))}><option value="">Escolher</option>{filteredDependencyTargetItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+                      <label>Tipo de dependência<select style={inputStyle} value={dependencyForm.dependency_type} onChange={(e) => setDependencyForm((s) => ({ ...s, dependency_type: e.target.value }))}>{dependencyTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                      <label>Lag em dias<input type="number" style={inputStyle} value={dependencyForm.lag_days ?? 0} onChange={(e) => setDependencyForm((s) => ({ ...s, lag_days: e.target.value }))} /></label>
+
+                      <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                        <button style={primaryButtonStyle} onClick={saveDependency}>Gravar dependência</button>
+                        <button style={buttonStyle} onClick={() => setDependencyForm(null)}>Cancelar</button>
+                        {dependencyForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('work_item_dependencies', dependencyForm.id)}>Apagar</button> : null}
+                      </div>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
+          ) : (
+            <div>Escolhe um projeto, tarefa ou cria um novo.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderDependenciesTab() {
+    return (
+      <div style={{ display: 'grid', gridTemplateColumns: '420px 1fr', gap: 16, alignItems: 'start' }}>
+        <div style={boxStyle}>
+          <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+            <strong>Dependências</strong>
+            <button onClick={createNewDependency} style={primaryButtonStyle}>+ Criar</button>
+          </div>
+
+          <div style={{ display: 'grid', gap: 10 }}>
+            <label>Projeto da tarefa origem<select style={inputStyle} value={dependencySourceProjectId} onChange={(e) => setDependencySourceProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+            <label>Projeto da tarefa destino<select style={inputStyle} value={dependencyTargetProjectId} onChange={(e) => setDependencyTargetProjectId(e.target.value)}><option value="">Escolher</option>{projects.map((project) => <option key={project.id} value={project.id}>{project.name}</option>)}</select></label>
+          </div>
+
+          <div style={{ marginTop: 12, display: 'grid', gap: 6 }}>
+            {dependencies.map((dep) => {
+              const pred = workItemMap.get(dep.predecessor_work_item_id)
+              const succ = workItemMap.get(dep.successor_work_item_id)
+              return (
+                <button
+                  key={dep.id}
+                  style={{ ...(selectedDependencyId === dep.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                  onClick={() => {
+                    setSelectedDependencyId(dep.id)
+                    setDependencyForm({ ...dep })
+                    const predProject = pred ? findProject(pred, workItemMap)?.id ?? '' : ''
+                    const succProject = succ ? findProject(succ, workItemMap)?.id ?? '' : ''
+                    setDependencySourceProjectId(predProject)
+                    setDependencyTargetProjectId(succProject)
+                  }}
+                >
+                  {(pred?.name ?? 'Sem origem')} → {(succ?.name ?? 'Sem destino')}
+                </button>
+              )
+            })}
+          </div>
+        </div>
+
+        <div style={boxStyle}>
+          {dependencyForm ? (
+            <div style={{ display: 'grid', gap: 10 }}>
+              <label>Tarefa origem<select style={inputStyle} value={dependencyForm.predecessor_work_item_id} onChange={(e) => setDependencyForm((s) => ({ ...s, predecessor_work_item_id: e.target.value }))}><option value="">Escolher</option>{filteredDependencySourceItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+              <label>Tarefa destino<select style={inputStyle} value={dependencyForm.successor_work_item_id} onChange={(e) => setDependencyForm((s) => ({ ...s, successor_work_item_id: e.target.value }))}><option value="">Escolher</option>{filteredDependencyTargetItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+              <label>Tipo de dependência<select style={inputStyle} value={dependencyForm.dependency_type} onChange={(e) => setDependencyForm((s) => ({ ...s, dependency_type: e.target.value }))}>{dependencyTypeOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+              <label>Lag em dias<input type="number" style={inputStyle} value={dependencyForm.lag_days ?? 0} onChange={(e) => setDependencyForm((s) => ({ ...s, lag_days: e.target.value }))} /></label>
+
+              <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                <button style={primaryButtonStyle} onClick={saveDependency}>Gravar</button>
+                <button style={buttonStyle} onClick={() => setDependencyForm(null)}>Cancelar</button>
+                {dependencyForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('work_item_dependencies', dependencyForm.id)}>Apagar</button> : null}
+              </div>
+            </div>
+          ) : (
+            <div>Escolhe uma dependência ou cria uma nova.</div>
+          )}
+        </div>
+      </div>
+    )
+  }
+
+  function renderAssignmentsTab() {
+    return (
+      <div style={boxStyle}>
+        <div style={{ display: 'grid', gridTemplateColumns: '360px 1fr', gap: 16, alignItems: 'start', marginTop: 0 }}>
+          <div style={boxStyle}>
+            <div style={{ display: 'flex', justifyContent: 'space-between', gap: 8, marginBottom: 10 }}>
+              <strong>Atribuições de projeto / tarefa</strong>
+              <button onClick={createNewWorkItemAssignment} style={primaryButtonStyle}>+ Criar</button>
+            </div>
+            <div style={{ display: 'grid', gap: 6 }}>
+              {workItemPeople.map((row) => {
+                const item = workItems.find((x) => x.id === row.work_item_id)
+                return (
+                  <button
+                    key={row.id}
+                    style={{ ...(selectedWorkItemAssignmentId === row.id ? primaryButtonStyle : buttonStyle), textAlign: 'left' }}
+                    onClick={() => {
+                      setSelectedWorkItemAssignmentId(row.id)
+                      setWorkItemAssignmentForm({ ...row })
+                    }}
+                  >
+                    {item ? workItemLabel(item) : 'Projeto / tarefa'} → {personName(row.person_id)}
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+
+          <div style={boxStyle}>
+            {workItemAssignmentForm ? (
+              <div style={{ display: 'grid', gap: 10 }}>
+                <label>Projeto / tarefa<select style={inputStyle} value={workItemAssignmentForm.work_item_id} onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, work_item_id: e.target.value }))}>{sortedWorkItems.map((item) => <option key={item.id} value={item.id}>{workItemLabel(item)}</option>)}</select></label>
+                <label>Pessoa<select style={inputStyle} value={workItemAssignmentForm.person_id} onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, person_id: e.target.value }))}>{people.map((person) => <option key={person.id} value={person.id}>{person.name}</option>)}</select></label>
+                <label>Papel<select style={inputStyle} value={workItemAssignmentForm.assignment_role} onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, assignment_role: e.target.value }))}>{genericRoleOptions.map(([value, label]) => <option key={value} value={value}>{label}</option>)}</select></label>
+                <label style={{ display: 'flex', gap: 8, alignItems: 'center' }}><input type="checkbox" checked={!!workItemAssignmentForm.is_primary} onChange={(e) => setWorkItemAssignmentForm((s) => ({ ...s, is_primary: e.target.checked }))} />Principal</label>
+
+                <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+                  <button style={primaryButtonStyle} onClick={saveWorkItemAssignment}>Gravar</button>
+                  <button style={buttonStyle} onClick={() => setWorkItemAssignmentForm(null)}>Cancelar</button>
+                  {workItemAssignmentForm.id ? <button style={dangerButtonStyle} onClick={() => removeRow('work_item_people', workItemAssignmentForm.id)}>Apagar</button> : null}
+                </div>
+              </div>
+            ) : (
+              <div>Escolhe uma atribuição de projeto / tarefa ou cria uma nova.</div>
+            )}
+          </div>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <>
+      <style>{`
+        :root {
+          font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+          color: #1d2a21;
+          background: #f6f8f4;
+        }
+
+        html, body, #root {
+          margin: 0;
+          min-height: 100%;
+          width: 100%;
+        }
+
+        body {
+          background: #f6f8f4;
+          color: #1d2a21;
+        }
+
+        * {
+          box-sizing: border-box;
+        }
+
+        label {
+          display: grid;
+          gap: 4px;
+          font-size: 12px;
+          color: #46604d;
+        }
+
+        select, input, textarea, button {
+          font: inherit;
+        }
+
+        textarea {
+          resize: vertical;
+        }
+      `}</style>
+
+      <div style={{ maxWidth: 1700, margin: '0 auto', padding: '24px 18px 40px' }}>
+        <header style={{ marginBottom: 18 }}>
+          <img
+            src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.svg"
+            alt="BPHDA"
+            style={{ display: 'block', height: 34, width: 'auto', marginBottom: 14 }}
+          />
+          <h1 style={{ margin: 0, fontSize: 26, lineHeight: 1.05, color: '#16361f' }}>
+            Editor de dados
+          </h1>
+          <div style={{ marginTop: 8, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <a href="/" style={{ ...buttonStyle, textDecoration: 'none', display: 'inline-block' }}>
+              Voltar à vista principal
+            </a>
+            <button onClick={loadAll} style={buttonStyle}>
+              Recarregar dados
+            </button>
+          </div>
+        </header>
+
+        <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap', marginBottom: 16 }}>
+          {[
+            ['people', 'Pessoas'],
+            ['areas', 'Áreas'],
+            ['functions', 'Funções'],
+            ['work_items', 'Projetos e tarefas'],
+
+
+          ].map(([key, label]) => (
+            <button key={key} onClick={() => setTab(key)} style={tab === key ? primaryButtonStyle : buttonStyle}>
+              {label}
+            </button>
+          ))}
+        </div>
+
+        {loading ? (
+          <div style={boxStyle}>A carregar...</div>
+        ) : (
+          <>
+            {error ? (
+              <div style={{ ...boxStyle, background: '#fff4f4', borderColor: '#efcaca', color: '#8a2f2f', marginBottom: 12 }}>
+                {error}
+              </div>
+            ) : null}
+
+            {message ? (
+              <div style={{ ...boxStyle, background: '#eef6e8', borderColor: '#cfe0c4', color: '#35513c', marginBottom: 12 }}>
+                {message}
+              </div>
+            ) : null}
+
+            {tab === 'people' ? renderPeopleTab() : null}
+            {tab === 'areas' ? renderAreasTab() : null}
+            {tab === 'functions' ? renderFunctionsTab() : null}
+            {tab === 'work_items' ? renderWorkItemsTab() : null}
+
+
+          </>
+        )}
+      </div>
+    </>
+  )
+}
+
+createRoot(document.getElementById('root')).render(<EditorApp />)
