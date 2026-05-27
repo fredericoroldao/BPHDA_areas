@@ -2,34 +2,63 @@ import { useEffect, useState } from 'react'
 import { supabase } from './supabaseClient'
 
 const pageStyle = {
-  minHeight: '100vh',
-  background: '#f2f5ef',
+  position: 'fixed',
+  inset: 0,
+  zIndex: 1000,
+  minHeight: '100svh',
+  width: '100vw',
+  background: '#f6f8f4',
   color: '#16361f',
   display: 'flex',
   alignItems: 'center',
   justifyContent: 'center',
-  padding: 18,
+  padding: 'clamp(18px, 4vw, 56px)',
+  boxSizing: 'border-box',
+  textAlign: 'left',
 }
 
 const panelStyle = {
-  width: 'min(520px, 100%)',
+  width: 'min(760px, 100%)',
   background: '#fff',
   border: '1px solid #b8c9b5',
-  borderRadius: 12,
-  padding: 20,
+  borderRadius: 16,
+  padding: 'clamp(24px, 4vw, 42px)',
   textAlign: 'left',
-  boxShadow: '0 2px 10px rgba(16,24,40,0.08)',
+  boxShadow: '0 10px 28px rgba(37, 65, 42, 0.10)',
 }
 
 const buttonStyle = {
-  minHeight: 38,
+  minHeight: 46,
   borderRadius: 999,
-  border: '1px solid #6e9575',
+  border: '2px solid #6e9575',
   background: '#dcefd8',
   color: '#16361f',
   cursor: 'pointer',
   fontWeight: 700,
-  padding: '8px 14px',
+  padding: '10px 18px',
+}
+
+const authLogoStyle = {
+  display: 'block',
+  width: 'min(520px, 100%)',
+  height: 'auto',
+  marginBottom: 24,
+}
+
+const authTitleStyle = {
+  margin: '0 0 12px',
+  fontSize: 'clamp(34px, 4vw, 48px)',
+  lineHeight: 1.05,
+  color: '#16361f',
+  fontWeight: 800,
+  letterSpacing: 0,
+}
+
+const authTextStyle = {
+  margin: '0 0 24px',
+  color: '#496350',
+  fontSize: 'clamp(18px, 2vw, 24px)',
+  lineHeight: 1.35,
 }
 
 function normalizeEmail(value) {
@@ -139,6 +168,7 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
   }
 
   async function signOut() {
+    if (!window.confirm('Queres mesmo sair da app?')) return
     await supabase.auth.signOut()
     setSession(null)
     setProfile(null)
@@ -164,9 +194,9 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     return (
       <div style={pageStyle}>
         <div style={panelStyle}>
-          <img src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.png" alt="BPHDA" style={{ height: 34, width: 'auto', marginBottom: 16 }} />
-          <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>Entrar na app</h1>
-          <p style={{ margin: '0 0 16px', color: '#496350' }}>Acesso reservado a utilizadores convidados. Entra com a tua conta Google.</p>
+          <img src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.png" alt="BPHDA" style={authLogoStyle} />
+          <h1 style={authTitleStyle}>Entrar na app</h1>
+          <p style={authTextStyle}>Acesso reservado a utilizadores convidados. Entra com a tua conta Google.</p>
           {error ? <p style={{ color: '#8a2f2f', margin: '0 0 12px' }}>{error}</p> : null}
           <button type="button" onClick={() => signIn(true)} style={buttonStyle}>Entrar com Google</button>
         </div>
@@ -178,8 +208,8 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     return (
       <div style={pageStyle}>
         <div style={panelStyle}>
-          <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>Acesso não autorizado</h1>
-          <p style={{ margin: '0 0 12px', color: '#496350' }}>
+          <h1 style={authTitleStyle}>Acesso não autorizado</h1>
+          <p style={authTextStyle}>
             A conta {session.user.email} ainda não está convidada para esta app.
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -197,8 +227,8 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     return (
       <div style={pageStyle}>
         <div style={panelStyle}>
-          <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>Sem permissão para o editor</h1>
-          <p style={{ margin: '0 0 12px', color: '#496350' }}>
+          <h1 style={authTitleStyle}>Sem permissão para o editor</h1>
+          <p style={authTextStyle}>
             A conta {session.user.email} tem acesso à vista pública, mas não tem permissões de admin.
           </p>
           <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>

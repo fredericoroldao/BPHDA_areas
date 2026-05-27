@@ -132,20 +132,18 @@ Deno.serve(async (req) => {
   if (inviteError) {
     if (isAlreadyRegisteredError(inviteError.message)) {
       return json({
-        ok: true,
         email,
         role,
-        warning: 'Este email já existe no Auth do Supabase. O acesso foi atualizado; o utilizador já pode entrar com Google.',
-      })
+        error: 'Este email já existe no Auth do Supabase. O acesso foi atualizado, mas o Supabase não envia email de convite para utilizadores que já existem. O utilizador deve entrar diretamente com Google.',
+      }, 409)
     }
 
     return json({
-      ok: true,
       email,
       role,
-      warning: `O utilizador foi criado na app, mas o email de convite não foi enviado pelo Supabase: ${inviteError.message}. O utilizador já pode abrir a app e entrar com Google.`,
-    })
+      error: `O acesso foi criado na app, mas o Supabase não enviou o email de convite: ${inviteError.message}. Para garantir envio real de emails, configura Custom SMTP em Authentication -> Settings -> SMTP.`,
+    }, 502)
   }
 
-  return json({ ok: true, email, role })
+  return json({ ok: true, email, role, emailSent: true })
 })

@@ -180,6 +180,10 @@ const appUserStatusOptions = [
 
 const DRAFT_WORK_ITEM_ID = '__draft_work_item__'
 
+function normalizeEmail(value) {
+  return String(value ?? '').trim().toLowerCase()
+}
+
 function emptyArea() {
   return { id: '', name: '', description: '', notes: '', status: 'active', sort_order: 0 }
 }
@@ -410,9 +414,10 @@ function EditorApp({ currentProfile }) {
 
   async function loadAll(options = {}) {
     const silent = !!options.silent
+    const keepMessage = !!options.keepMessage
     if (!silent) setLoading(true)
     setError('')
-    setMessage('')
+    if (!keepMessage) setMessage('')
 
     const results = await Promise.all([
       supabase.from('people').select('*').order('name', { ascending: true }),
@@ -445,6 +450,7 @@ function EditorApp({ currentProfile }) {
     const loadedAppUsers = results[8].data ?? []
     setAppUsers(currentProfile?.role === 'superadmin' ? loadedAppUsers : loadedAppUsers.filter((user) => user.role !== 'superadmin'))
     if (!silent) setLoading(false)
+    return { appUsers: loadedAppUsers }
   }
 
   const peopleMap = useMemo(() => new Map(people.map((x) => [x.id, x])), [people])
@@ -733,7 +739,7 @@ function EditorApp({ currentProfile }) {
 
     setInviting(true)
     setError('')
-    setMessage('')
+    setMessage(`Convite a ser enviado para ${email}...`)
 
     const { data, error: inviteError } = await supabase.functions.invoke('invite-user', {
       body: {
@@ -756,17 +762,22 @@ function EditorApp({ currentProfile }) {
 
     if (inviteError || data?.error) {
       setError(functionError ?? inviteError?.message ?? 'Não foi possível enviar o convite.')
+      setMessage('')
       setInviting(false)
       return
     }
 
     setInviteForm({ email: '', name: '', role: 'viewer' })
-    setMessage(data?.warning ?? `Convite enviado para ${email}.`)
+    setMessage('Convite enviado. A atualizar a lista de utilizadores...')
+    const loaded = await loadAll({ silent: true, keepMessage: true })
+    const isInList = loaded?.appUsers?.some((user) => String(user.email).toLowerCase() === email)
+    setMessage(data?.warning ?? (isInList ? `Convite enviado para ${email}.` : `Convite enviado para ${email}. A lista ainda não devolveu o utilizador.`))
     setInviting(false)
-    await loadAll({ silent: true })
   }
 
   function canManageAppUser(user) {
+    if (user.role === 'superadmin' && normalizeEmail(user.email) === normalizeEmail(currentProfile?.email)) return false
+    if (user.role === 'superadmin' && appUsers.filter((row) => row.role === 'superadmin').length <= 1) return false
     if (currentProfile?.role === 'superadmin') return true
     return user.role !== 'superadmin'
   }
@@ -791,7 +802,7 @@ function EditorApp({ currentProfile }) {
 
   async function deleteAppUser(user) {
     if (!canManageAppUser(user)) {
-      setError('Não tens permissão para apagar este utilizador.')
+      setError(user.role === 'superadmin' ? 'Esta conta superadmin está protegida para não perderes acesso ao editor.' : 'Não tens permissão para apagar este utilizador.')
       return
     }
 
