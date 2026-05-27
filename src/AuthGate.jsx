@@ -36,6 +36,28 @@ function normalizeEmail(value) {
   return String(value ?? '').trim().toLowerCase()
 }
 
+function getCleanCurrentUrl() {
+  return `${window.location.origin}${window.location.pathname}`
+}
+
+function cleanAuthUrl() {
+  if (window.location.hash.includes('access_token') || window.location.hash.includes('refresh_token')) {
+    window.history.replaceState({}, document.title, getCleanCurrentUrl())
+  }
+}
+
+function getSessionFromUrlHash() {
+  const hash = window.location.hash
+  if (!hash.includes('access_token') || !hash.includes('refresh_token')) return null
+
+  const params = new URLSearchParams(hash.replace(/^#+/, ''))
+  const accessToken = params.get('access_token')
+  const refreshToken = params.get('refresh_token')
+  if (!accessToken || !refreshToken) return null
+
+  return { access_token: accessToken, refresh_token: refreshToken }
+}
+
 export default function AuthGate({ children, requiredRoles = [], exposeProfile = false }) {
   const [session, setSession] = useState(null)
   const [profile, setProfile] = useState(null)
@@ -46,6 +68,12 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     let cancelled = false
 
     async function init() {
+      const urlSession = getSessionFromUrlHash()
+      if (urlSession) {
+        await supabase.auth.setSession(urlSession)
+        cleanAuthUrl()
+      }
+
       const { data, error: sessionError } = await supabase.auth.getSession()
       if (cancelled) return
       if (sessionError) {
@@ -103,7 +131,7 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
-        redirectTo: window.location.href,
+        redirectTo: getCleanCurrentUrl(),
         queryParams: forceAccountChoice ? { prompt: 'select_account' } : undefined,
       },
     })
@@ -114,6 +142,7 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     await supabase.auth.signOut()
     setSession(null)
     setProfile(null)
+    cleanAuthUrl()
   }
 
   async function signInWithAnotherAccount() {
