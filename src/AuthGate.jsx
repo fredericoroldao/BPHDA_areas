@@ -15,6 +15,7 @@ const pageStyle = {
   padding: 'clamp(18px, 4vw, 56px)',
   boxSizing: 'border-box',
   textAlign: 'left',
+  fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
 const panelStyle = {
@@ -47,18 +48,20 @@ const authLogoStyle = {
 
 const authTitleStyle = {
   margin: '0 0 12px',
-  fontSize: 'clamp(34px, 4vw, 48px)',
+  fontSize: 'clamp(30px, 3.4vw, 42px)',
   lineHeight: 1.05,
   color: '#16361f',
-  fontWeight: 800,
+  fontWeight: 760,
   letterSpacing: 0,
+  fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
 const authTextStyle = {
   margin: '0 0 24px',
   color: '#496350',
-  fontSize: 'clamp(18px, 2vw, 24px)',
+  fontSize: 'clamp(17px, 1.5vw, 21px)',
   lineHeight: 1.35,
+  fontFamily: 'Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif',
 }
 
 function normalizeEmail(value) {
