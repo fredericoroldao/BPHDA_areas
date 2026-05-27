@@ -139,7 +139,12 @@ Deno.serve(async (req) => {
       })
     }
 
-    return json({ error: inviteError.message }, 500)
+    return json({
+      ok: true,
+      email,
+      role,
+      warning: `O utilizador foi criado na app, mas o email de convite não foi enviado pelo Supabase: ${inviteError.message}. O utilizador já pode abrir a app e entrar com Google.`,
+    })
   }
 
   return json({ ok: true, email, role })
