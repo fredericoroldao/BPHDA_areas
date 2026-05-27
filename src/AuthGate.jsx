@@ -216,6 +216,14 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
         <span style={{ background: '#fff', border: '1px solid #b8c9b5', borderRadius: 999, padding: '6px 10px', fontSize: 12, color: '#35513c' }}>
           {profile.email} · {profile.role}
         </span>
+        {['admin', 'superadmin'].includes(profile.role) && window.location.pathname !== '/editor.html' ? (
+          <a
+            href="/editor.html"
+            style={{ ...buttonStyle, minHeight: 30, padding: '5px 10px', background: '#fff', fontSize: 12, textDecoration: 'none', display: 'inline-flex', alignItems: 'center' }}
+          >
+            Editor
+          </a>
+        ) : null}
         <button type="button" onClick={signOut} style={{ ...buttonStyle, minHeight: 30, padding: '5px 10px', background: '#fff' }}>Sair</button>
       </div>
       {typeof children === 'function' && exposeProfile ? children({ session, profile, signOut }) : children}
