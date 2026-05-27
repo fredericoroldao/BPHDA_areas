@@ -98,12 +98,13 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     setLoading(false)
   }
 
-  async function signIn() {
+  async function signIn(forceAccountChoice = false) {
     setError('')
     const { error: signInError } = await supabase.auth.signInWithOAuth({
       provider: 'google',
       options: {
         redirectTo: window.location.href,
+        queryParams: forceAccountChoice ? { prompt: 'select_account' } : undefined,
       },
     })
     if (signInError) setError(signInError.message)
@@ -113,6 +114,13 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
     await supabase.auth.signOut()
     setSession(null)
     setProfile(null)
+  }
+
+  async function signInWithAnotherAccount() {
+    await supabase.auth.signOut()
+    setSession(null)
+    setProfile(null)
+    await signIn(true)
   }
 
   if (loading) {
@@ -131,7 +139,7 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
           <h1 style={{ margin: '0 0 8px', fontSize: 24 }}>Entrar na app</h1>
           <p style={{ margin: '0 0 16px', color: '#496350' }}>Acesso reservado a utilizadores convidados. Entra com a tua conta Google.</p>
           {error ? <p style={{ color: '#8a2f2f', margin: '0 0 12px' }}>{error}</p> : null}
-          <button type="button" onClick={signIn} style={buttonStyle}>Entrar com Google</button>
+          <button type="button" onClick={() => signIn(true)} style={buttonStyle}>Entrar com Google</button>
         </div>
       </div>
     )
@@ -145,7 +153,10 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
           <p style={{ margin: '0 0 12px', color: '#496350' }}>
             A conta {session.user.email} ainda não está convidada para esta app.
           </p>
-          <button type="button" onClick={signOut} style={buttonStyle}>Sair</button>
+          <div style={{ display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button type="button" onClick={signInWithAnotherAccount} style={buttonStyle}>Entrar com outra conta Google</button>
+            <button type="button" onClick={signOut} style={{ ...buttonStyle, background: '#fff' }}>Sair</button>
+          </div>
         </div>
       </div>
     )
