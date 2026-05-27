@@ -19,14 +19,14 @@ function inviteEmailHtml({ email, name, role, appUrl }: { email: string; name: s
   const displayName = name || email
   return `
     <div style="font-family:Arial,sans-serif;color:#16361f;line-height:1.5">
-      <h1 style="margin:0 0 12px;font-size:24px">Convite para BPHDA areas</h1>
+      <h1 style="margin:0 0 12px;font-size:24px">Convite para BPHDA projects</h1>
       <p>Olá ${displayName},</p>
-      <p>Foi-te dado acesso à app BPHDA areas com o perfil <strong>${role}</strong>.</p>
+      <p>Foi-te dado acesso à app BPHDA projects com o perfil <strong>${role}</strong>.</p>
       <p>Para entrar, abre o link abaixo e escolhe esta conta Google:</p>
       <p><strong>${email}</strong></p>
       <p>
         <a href="${appUrl}" style="display:inline-block;background:#dcefd8;border:1px solid #6e9575;border-radius:999px;color:#16361f;font-weight:700;padding:10px 16px;text-decoration:none">
-          Abrir BPHDA areas
+          Abrir BPHDA projects
         </a>
       </p>
       <p style="font-size:13px;color:#496350">Se o botão não abrir, copia este endereço: ${appUrl}</p>
@@ -54,7 +54,7 @@ async function sendCustomInviteEmail({ email, name, role, appUrl }: { email: str
     body: JSON.stringify({
       from,
       to: email,
-      subject: 'Convite para BPHDA areas',
+      subject: 'Convite para BPHDA projects',
       html: inviteEmailHtml({ email, name, role, appUrl }),
     }),
   })

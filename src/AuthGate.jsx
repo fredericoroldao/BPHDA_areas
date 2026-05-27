@@ -198,7 +198,6 @@ export default function AuthGate({ children, requiredRoles = [], exposeProfile =
       <div style={pageStyle}>
         <div style={panelStyle}>
           <img src="https://img.brainstormphda.pt/marca/logo/BPHDA_logo_pt_horizontal_verde.png" alt="BPHDA" style={authLogoStyle} />
-          <h1 style={authTitleStyle}>Entrar na app</h1>
           <p style={authTextStyle}>Acesso reservado a utilizadores convidados. Entra com a tua conta Google.</p>
           {error ? <p style={{ color: '#8a2f2f', margin: '0 0 12px' }}>{error}</p> : null}
           <button type="button" onClick={() => signIn(true)} style={buttonStyle}>Entrar com Google</button>
