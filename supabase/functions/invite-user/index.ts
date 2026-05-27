@@ -15,6 +15,10 @@ function json(body: unknown, status = 200) {
   })
 }
 
+function isAlreadyRegisteredError(errorMessage: string) {
+  return /already.*registered|already.*exists|user.*exists/i.test(errorMessage)
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
@@ -126,6 +130,15 @@ Deno.serve(async (req) => {
   })
 
   if (inviteError) {
+    if (isAlreadyRegisteredError(inviteError.message)) {
+      return json({
+        ok: true,
+        email,
+        role,
+        warning: 'Este email já existe no Auth do Supabase. O acesso foi atualizado; o utilizador já pode entrar com Google.',
+      })
+    }
+
     return json({ error: inviteError.message }, 500)
   }
 

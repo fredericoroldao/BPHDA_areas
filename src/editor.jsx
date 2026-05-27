@@ -744,14 +744,24 @@ function EditorApp({ currentProfile }) {
       },
     })
 
+    let functionError = data?.error
+    if (inviteError?.context) {
+      try {
+        const details = await inviteError.context.json()
+        functionError = details?.error ?? functionError
+      } catch {
+        functionError = functionError ?? inviteError.message
+      }
+    }
+
     if (inviteError || data?.error) {
-      setError(inviteError?.message ?? data?.error ?? 'Não foi possível enviar o convite.')
+      setError(functionError ?? inviteError?.message ?? 'Não foi possível enviar o convite.')
       setInviting(false)
       return
     }
 
     setInviteForm({ email: '', name: '', role: 'viewer' })
-    setMessage(`Convite enviado para ${email}.`)
+    setMessage(data?.warning ?? `Convite enviado para ${email}.`)
     setInviting(false)
     await loadAll({ silent: true })
   }
